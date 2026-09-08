@@ -7,7 +7,7 @@ NMRaid는 브라우저에서 1D `¹H NMR` 데이터를 읽고 용매 피크 보�
 ## 주요 기능
 
 - ZIP, 압축 해제 폴더, 개별 NMR 파일 입력
-- Bruker `ANRE/ARNE` 실험 폴더 자동 탐색
+- Bruker 실험 폴더 자동 탐색
 - 용매 피크를 가장 큰 단일 `singlet`로 분류
 - 피크 구간 수동 추가와 적분값 수정
 - `s`, `d`, `t`, `q`, `quint`, `sext`, `dd`, `ddd`, `dddd`, `dt`, `td`, `dq`, `tt`, `tdd`, `dtd`, `ddt`, `m` 지원
