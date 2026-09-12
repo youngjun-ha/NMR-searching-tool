@@ -281,7 +281,7 @@ function inferMultiplicity(group: { ppm: number; intensity: number }[]) {
   return { code, name: MULTIPLICITY_NAMES[code], lineCount: count };
 }
 
-function analyzeSpectrum(points: SpectrumPoint[], solventId: string): Peak[] {
+function analyzeSpectrum(points: SpectrumPoint[], solventId: string, carbon = false): Peak[] {
   if (points.length < 8) return [];
   const ys = movingAverage(points.map((point) => point.y), 1);
   const sorted = [...ys].sort((a, b) => a - b);
@@ -305,7 +305,7 @@ function analyzeSpectrum(points: SpectrumPoint[], solventId: string): Peak[] {
     else groups.push([candidate]);
   }
 
-  const solvent = SOLVENTS.find((item) => item.id === solventId) ?? SOLVENTS[0];
+  const solvent = carbon ? { ppm: NaN, name: "" } : SOLVENTS.find((item) => item.id === solventId) ?? SOLVENTS[0];
   const groupedSignals = groups
     .map((group) => {
       const strongestLine = group.reduce((strongest, item) => item.intensity > strongest.intensity ? item : strongest, group[0]);
@@ -324,7 +324,7 @@ function analyzeSpectrum(points: SpectrumPoint[], solventId: string): Peak[] {
     })
     .filter((peak) => peak.intensity > Math.max((maxY - baseline) * 0.008, noise * 6))
     .sort((a, b) => b.ppm - a.ppm)
-    .slice(0, 28);
+    .slice(0, carbon ? 200 : 28);
 
   const summarizedRaw = groupedSignals.map((signal, index) => {
       const leftDistance = index > 0 ? Math.abs(groupedSignals[index - 1].ppm - signal.ppm) : Infinity;
@@ -344,7 +344,7 @@ function analyzeSpectrum(points: SpectrumPoint[], solventId: string): Peak[] {
     .filter((signal) => Math.abs(signal.ppm - solvent.ppm) < 0.095)
     .sort((a, b) => b.intensity - a.intensity)[0];
   const summarized = summarizedRaw.filter((signal) => (
-    Math.abs(signal.ppm - solvent.ppm) >= 0.095 || signal === dominantSolvent
+    carbon || Math.abs(signal.ppm - solvent.ppm) >= 0.095 || signal === dominantSolvent
   ));
 
   const nonSolventAreas = summarized
@@ -355,7 +355,7 @@ function analyzeSpectrum(points: SpectrumPoint[], solventId: string): Peak[] {
   return summarized
     .map((peak, id) => {
       const isSolvent = Math.abs(peak.ppm - solvent.ppm) < 0.085;
-      const known = knownImpurity(peak.ppm, solventId);
+      const known = carbon ? null : knownImpurity(peak.ppm, solventId);
       const relative = peak.intensity / Math.max(maxY - baseline, 1e-9);
       const impurity = known;
       const kind: PeakKind = isSolvent ? "solvent" : impurity ? "impurity" : "main";
@@ -574,7 +574,7 @@ function applyDbePlan(candidate: Candidate, peaks: Peak[]): Candidate {
   };
 }
 
-function formulaStructureCandidates(formula: FormulaSuggestion, peaks: Peak[]): Candidate[] {
+function formulaStructureCandidates(formula: FormulaSuggestion, peaks: Peak[], carbon: Peak[] = []): Candidate[] {
   const main = peaks.filter((peak) => peak.kind === "main");
   const aromaticPeaks = main.filter((peak) => peak.ppm >= 6.4);
   const aromaticSignals = aromaticPeaks.length;
@@ -587,7 +587,7 @@ function formulaStructureCandidates(formula: FormulaSuggestion, peaks: Peak[]): 
     && main.some((peak) => peak.multiplicity === "t" && peak.ppm >= 0.7 && peak.ppm < 1.8);
   const methoxyLike = main.some((peak) => peak.multiplicity === "s" && peak.ppm >= 3.1 && peak.ppm < 4.2);
   const aromaticPossible = formula.dbe >= 4 && formula.c >= 6;
-  const aromaticSupported = aromaticPossible && aromaticSignals >= 2 && aromaticIntegral >= 2;
+  const aromaticSupported = aromaticPossible && ((aromaticSignals >= 2 && aromaticIntegral >= 2) || carbon.filter((peak) => peak.kind === "main" && peak.ppm >= 110 && peak.ppm < 160).length >= 2);
   const heteroLabel = [formula.o ? `O${formula.o > 1 ? subscript(formula.o) : ""}` : "", formula.n ? `N${formula.n > 1 ? subscript(formula.n) : ""}` : ""].filter(Boolean).join("/");
 
   if (formula.n + formula.o === 0) {
@@ -736,14 +736,15 @@ function FormulaText({ formulaKey: value }: { formulaKey: string }) {
   );
 }
 
-function suggestFormulas(mzText: string, ionMode: IonMode, peaks: Peak[]): FormulaSuggestion[] {
+function suggestFormulas(mzText: string, ionMode: IonMode, peaks: Peak[], carbon: Peak[] = []): FormulaSuggestion[] {
   const observed = Number(mzText);
   if (!Number.isFinite(observed) || observed <= 1) return [];
   const neutralTarget = observed - ION_MODES[ionMode].delta;
   if (neutralTarget < 12 || neutralTarget > 900) return [];
   const decimals = mzText.includes(".") ? mzText.split(".")[1]?.length ?? 0 : 0;
   const tolerance = decimals === 0 ? 0.55 : decimals === 1 ? 0.12 : decimals === 2 ? 0.025 : 0.008;
-  const hasAromatic = peaks.filter((peak) => peak.kind === "main" && peak.ppm >= 6.4).length >= 2;
+  const hasAromatic = peaks.filter((peak) => peak.kind === "main" && peak.ppm >= 6.4).length >= 2
+    || carbon.filter((peak) => peak.kind === "main" && peak.ppm >= 110 && peak.ppm < 160).length >= 2;
   const heteroShiftCount = peaks.filter((peak) => peak.kind === "main" && peak.ppm >= 3.1 && peak.ppm < 6.4).length;
   const hasHeteroShift = heteroShiftCount > 0;
   const maxMainIntensity = Math.max(...peaks.filter((peak) => peak.kind === "main").map((peak) => peak.intensity), 0);
@@ -767,6 +768,12 @@ function suggestFormulas(mzText: string, ionMode: IonMode, peaks: Peak[]): Formu
         if (massError > tolerance) continue;
 
         let chemistryFit = 61;
+        const carbonMain = carbon.filter((peak) => peak.kind === "main");
+        if (carbonMain.length) {
+          chemistryFit -= Math.max(0, carbonMain.length - c) * 12;
+          if (carbonMain.some((peak) => peak.ppm >= 160)) chemistryFit += o > 0 && dbe > 0 ? 12 : -30;
+          if (carbonMain.some((peak) => peak.ppm >= 100 && peak.ppm < 160)) chemistryFit += dbe > 0 ? 5 : -20;
+        }
         if (hasAromatic) chemistryFit += dbe >= 4 ? 17 : -28;
         else if (dbe <= 3) chemistryFit += 8;
         if (hasHeteroShift) chemistryFit += o + n > 0 ? 11 : -18;
@@ -1095,7 +1102,7 @@ async function parseFlatBruker(files: File[]): Promise<ParsedSpectrum | null> {
     }));
     return {
       points,
-      nucleus: brukerValue(acquisition, "NUC1") || "1H",
+      nucleus: brukerValue(acquisition, "NUC1") || "",
       frequency,
       source: "BRUKER · 1r + procs",
       fileName: "Bruker processed spectrum",
@@ -1128,7 +1135,7 @@ async function parseFlatBruker(files: File[]): Promise<ParsedSpectrum | null> {
         frequencyOffset: brukerNumber(parameters, "O1") ?? 0,
         spectralWidth: spectralWidthHz / frequency,
       }),
-      nucleus: brukerValue(parameters, "NUC1") || "1H",
+      nucleus: brukerValue(parameters, "NUC1") || "",
       frequency,
       source: "BRUKER · fid + acqus",
       fileName: "Bruker raw FID preview",
@@ -1192,11 +1199,11 @@ async function parseBrukerFolderDatasets(files: File[]) {
     const parsed = await parseFlatBruker([processed, procs, ...(acqus ? [acqus] : [])]);
     if (parsed) datasets.push({ ...parsed, fileName: brukerDatasetLabel(processedPath) });
   }
-  if (datasets.length) return datasets;
 
   const fidFiles = files.filter((file) => pathName(filePath(file)) === "fid");
   for (const fid of fidFiles) {
     const fidPath = filePath(fid);
+    if (processedFiles.some((file) => filePath(file).startsWith(`${pathDirectory(fidPath)}/pdata/`))) continue;
     const acqus = nearestAncestorFile(files, "acqus", fidPath) ?? nearestAncestorFile(files, "acqu", fidPath);
     if (!acqus) continue;
     const parsed = await parseFlatBruker([fid, acqus]);
@@ -1221,7 +1228,7 @@ async function parseStandaloneBrukerBinary(file: File): Promise<ParsedSpectrum |
     }));
     return {
       points,
-      nucleus: "1H",
+      nucleus: "",
       frequency: null,
       source: "BRUKER · 1r 단독 미리보기",
       fileName: file.name,
@@ -1240,7 +1247,7 @@ async function parseStandaloneBrukerBinary(file: File): Promise<ParsedSpectrum |
   }
   return {
     points: magnitudeFT(re, im, { baseFrequency: 400, spectralWidth: 13 }),
-    nucleus: "1H",
+    nucleus: "",
     frequency: null,
     source: "BRUKER · fid 단독 미리보기",
     fileName: file.name,
@@ -1313,7 +1320,7 @@ function normalizeParsed(entry: ParserEntry, fileName: string, source: string): 
     const points = isFid ? magnitudeFT(re, im, info) : x.map((value, index) => ({ x: value, y: re[index] ?? 0 }));
     return {
       points,
-      nucleus: String(firstValue(info.nucleus) ?? firstValue(xySpectrum.nucleus) ?? "1H").replace(/[<>]/g, ""),
+      nucleus: String(firstValue(info.nucleus) ?? firstValue(xySpectrum.nucleus) ?? "").replace(/[<>]/g, ""),
       frequency: firstFinite(info.baseFrequency, info.originFrequency, xySpectrum.observeFrequency),
       source,
       fileName,
@@ -1333,7 +1340,7 @@ function normalizeParsed(entry: ParserEntry, fileName: string, source: string): 
       const im = isComplex ? data.filter((_, index) => index % 2 === 1) : [];
       return {
         points: magnitudeFT(y, im, info),
-        nucleus: String(firstValue(info.nucleus) ?? "1H"),
+        nucleus: String(firstValue(info.nucleus) ?? ""),
         frequency: firstFinite(info.baseFrequency, info.originFrequency),
         source,
         fileName,
@@ -1347,7 +1354,7 @@ function normalizeParsed(entry: ParserEntry, fileName: string, source: string): 
     const points = y.map((value, index) => ({ x: ((offset + index * increment) / origin) * 1e6, y: value }));
     return {
       points: points.sort((a, b) => b.x - a.x),
-      nucleus: String(firstValue(info.nucleus) ?? "1H"),
+      nucleus: String(firstValue(info.nucleus) ?? ""),
       frequency: firstFinite(info.baseFrequency, info.originFrequency),
       source,
       fileName,
@@ -1395,7 +1402,7 @@ async function parseTextXyFile(file: File): Promise<ParsedSpectrum | null> {
   if (Math.abs(high - low) < 1e-9) return null;
   return {
     points: cleaned,
-    nucleus: "1H",
+    nucleus: /(?:13c|c13|carbon)/i.test(file.name) ? "13C" : /(?:1h|h1|proton)/i.test(file.name) ? "1H" : "",
     frequency: null,
     source: "OPEN · XY TEXT",
     fileName: file.name,
@@ -1717,49 +1724,155 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
   }
 }
 
+type Nucleus = "1H" | "13C";
+function nucleusKey(value: string): Nucleus | null {
+  const normalized = value.replace(/[<>^\s]/g, "").toUpperCase();
+  if (["13C", "C13", "¹³C"].includes(normalized)) return "13C";
+  if (["1H", "H1", "¹H"].includes(normalized)) return "1H";
+  return null;
+}
+// Carbon solvent centers; D2O contains no carbon. Acetone has two carbon sites.
+const CARBON_SOLVENTS = SOLVENTS.map((item) => ({ ...item, ppm: ({ cdcl3: 77.16, dmso: 39.52, cd3od: 49.0, d2o: NaN, acetone: 29.84, c6d6: 128.06 } as Record<string, number>)[item.id] }));
+function carbonAssignment(ppm: number) {
+  if (ppm >= 185) return "알데하이드 / 케톤 C=O 영역";
+  if (ppm >= 160) return "에스터 / 산 / 아마이드 C=O 영역";
+  if (ppm >= 100) return "방향족 / 알켄 / 아세탈 탄소 영역";
+  if (ppm >= 50) return "O/N 인접 또는 sp 탄소 영역";
+  return "지방족 탄소 영역";
+}
+function analyzeCarbon(points: SpectrumPoint[], solventId: string): Peak[] {
+  // Reuse noise rejection and area calculation, never proton assignments or integrals.
+  const solvent = CARBON_SOLVENTS.find((item) => item.id === solventId)!;
+  const centers = solventId === "acetone" ? [solvent.ppm, 206.26] : [solvent.ppm];
+  return analyzeSpectrum(points, "carbon-unassigned", true).map((peak) => {
+    const isSolvent = centers.some((center) => Math.abs(peak.ppm - center) < 0.85);
+    return { ...peak, integral: 0, multiplicity: "s", multiplicityName: "탄소 신호", lineCount: 1,
+      kind: isSolvent ? "solvent" : "main", assignment: isSolvent ? `${solvent.name} 탄소 용매 영역` : carbonAssignment(peak.ppm),
+      reason: isSolvent ? "중수소 결합으로 갈라진 용매선 포함 · 구조 예측에서 제외" : "¹³C ppm 기반 영역 추정 · 면적은 탄소 수로 사용하지 않음" };
+  });
+}
+type SpectrumSession = {
+  points: SpectrumPoint[]; fileName: string; source: string; frequency: number | null;
+  solventId: string; offset: number; isDemo: boolean; referencePeakId: number | null;
+  referenceIntegral: string; excludedPeakIds: number[]; multiplicityOverrides: Record<number, MultiplicityCode>;
+  verticalScale: number; chartMode: ChartMode; manualPeaks: Peak[]; range: [number, number]; activeDataset: number;
+};
+function emptySession(nucleus: Nucleus): SpectrumSession {
+  return { points: [], fileName: `${nucleus} 데이터를 업로드하세요`, source: "미입력", frequency: null,
+    solventId: "cdcl3", offset: 0, isDemo: false, referencePeakId: null, referenceIntegral: "1",
+    excludedPeakIds: [], multiplicityOverrides: {}, verticalScale: 1, chartMode: "navigate", manualPeaks: [],
+    range: nucleus === "13C" ? [-10, 220] : [-0.4, 10.2], activeDataset: -1 };
+}
+function sessionPeaks(session: SpectrumSession, nucleus: Nucleus): Peak[] {
+  const shifted = session.points.map((point) => ({ ...point, x: point.x + session.offset }));
+  let detected = nucleus === "13C" ? analyzeCarbon(shifted, session.solventId) : analyzeSpectrum(shifted, session.solventId);
+  if (session.isDemo) detected = detected.map((peak) => {
+    const expected = DEMO_SIGNALS.find((signal) => signal.integral > 0 && Math.abs(signal.ppm + session.offset - peak.ppm) < 0.08);
+    return expected && peak.kind === "main" ? { ...peak, integral: expected.integral, area: expected.integral } : peak;
+  });
+  const reviewed = [...detected, ...session.manualPeaks].filter((peak) => !session.excludedPeakIds.includes(peak.id)).map((peak) => {
+    const multiplicity = session.multiplicityOverrides[peak.id] ?? peak.multiplicity;
+    return { ...peak, multiplicity };
+  });
+  if (nucleus === "13C") return reviewed;
+  const main = reviewed.filter((peak) => peak.kind === "main");
+  const largest = Math.max(0, ...main.map((peak) => peak.area));
+  const reference = main.find((peak) => peak.id === session.referencePeakId)
+    ?? main.filter((peak) => peak.area >= largest * 0.12).reduce<Peak | undefined>((a, b) => !a || b.area < a.area ? b : a, undefined);
+  const value = Number(session.referenceIntegral);
+  return reviewed.map((peak) => ({ ...peak, integral: reference && value > 0 && Number.isFinite(value) ? peak.area / Math.max(reference.area, 1e-12) * value : 0 }));
+}
+function compareCarbon(candidate: Candidate, peak: Peak) {
+  const plan = candidate.dbePlan ?? dbePlanFor(candidate.formulaKey, candidate.structureType);
+  const composition = parseFormulaKey(candidate.formulaKey);
+  const match = peak.ppm >= 160 ? plan.carbonyls > 0 : peak.ppm >= 100 ? plan.aromaticRings + plan.alkenes > 0 : peak.ppm >= 50 ? composition.o + composition.n + plan.alkynes > 0 : composition.c > 0;
+  return { match, label: `${carbonAssignment(peak.ppm)} · ${match ? "골격과 비교 가능" : "골격 불일치 검토"}` };
+}
+function rankWithCarbon(candidates: Candidate[], carbon: Peak[], hasProton: boolean): Candidate[] {
+  const main = carbon.filter((peak) => peak.kind === "main");
+  if (!main.length) return candidates;
+  return candidates.map((candidate) => {
+    const matches = main.filter((peak) => compareCarbon(candidate, peak).match).length;
+    const countPenalty = Math.max(0, main.length - parseFormulaKey(candidate.formulaKey).c) * 12;
+    const carbonScore = Math.max(5, 25 + 65 * matches / main.length - countPenalty);
+    const score = Math.round(hasProton ? candidate.baseScore * 0.55 + carbonScore * 0.45 : carbonScore);
+    return { ...candidate, baseScore: score, score, rationale: `${hasProton ? candidate.rationale : "¹³C만으로 제시한 제한된 구조 가설입니다."} ¹³C 주 신호 ${main.length}개 중 ${matches}개 영역이 골격과 양립합니다. 대칭·겹침 때문에 신호 수는 총 탄소 수와 다를 수 있습니다.` };
+  });
+}
+function carbonCandidates(): Candidate[] {
+  // Existing small comparison library, with no fabricated proton observations.
+  return [
+    ["Ethyl benzoate", "C9H10O2", "ethyl-benzoate", 150.0681],
+    ["Methyl phenylacetate", "C9H10O2", "methyl-phenylacetate", 150.0681],
+    ["Ethylbenzene", "C8H10", "ethylbenzene", 106.0783],
+    ["Anisole", "C7H8O", "anisole", 108.0575],
+    ["Diethyl ether", "C4H10O", "diethyl-ether", 74.0732],
+    ["Ethyl acetate", "C4H8O2", "ethyl-acetate", 88.0524],
+  ].map(([name, formulaKey, structureType, exactMass]) => ({ name, formula: formulaKey, formulaKey, structureType, exactMass, baseScore: 50, score: 50, rationale: "¹³C 비교 후보" } as Candidate));
+}
+
 function NmrApp() {
   const demoPoints = useMemo(() => buildDemoSpectrum(), []);
-  const [points, setPoints] = useState<SpectrumPoint[]>(demoPoints);
-  const [fileName, setFileName] = useState("ethyl-benzoate_demo.dx");
-  const [source, setSource] = useState("DEMO · JCAMP-DX");
-  const [nucleus, setNucleus] = useState("1H");
-  const [frequency, setFrequency] = useState<number | null>(400.13);
+  const [nucleus, setNucleus] = useState<Nucleus>("1H");
+  const [sessions, setSessions] = useState<Record<Nucleus, SpectrumSession>>(() => ({
+    "1H": { ...emptySession("1H"), points: demoPoints, fileName: "ethyl-benzoate_demo.dx", source: "DEMO · JCAMP-DX", frequency: 400.13, isDemo: true },
+    "13C": emptySession("13C"),
+  }));
+  function spectrumSetter<K extends keyof SpectrumSession>(key: K) {
+    return (value: SpectrumSession[K] | ((previous: SpectrumSession[K]) => SpectrumSession[K])) => setSessions((previous) => ({ ...previous, [nucleus]: { ...previous[nucleus], [key]: typeof value === "function" ? (value as (previous: SpectrumSession[K]) => SpectrumSession[K])(previous[nucleus][key]) : value } }));
+  }
+  const isCarbon = nucleus === "13C";
+  const availableSolvents = isCarbon ? CARBON_SOLVENTS : SOLVENTS;
+  const points = sessions[nucleus].points;
+  const fileName = sessions[nucleus].fileName;
+  const source = sessions[nucleus].source;
+  const frequency = sessions[nucleus].frequency;
   const [datasets, setDatasets] = useState<ParsedSpectrum[]>([]);
-  const [activeDataset, setActiveDataset] = useState(0);
-  const [solventId, setSolventId] = useState("cdcl3");
-  const [offset, setOffset] = useState(0);
+  const activeDataset = sessions[nucleus].activeDataset;
+  const solventId = sessions[nucleus].solventId;
+  const setSolventId = spectrumSetter("solventId");
+  const offset = sessions[nucleus].offset;
+  const setOffset = spectrumSetter("offset");
   const [status, setStatus] = useState<"ready" | "loading" | "error">("ready");
   const [message, setMessage] = useState("예제 데이터를 분석했습니다. 새 파일을 드롭하면 교체됩니다.");
-  const [isDemo, setIsDemo] = useState(true);
+  const isDemo = sessions[nucleus].isDemo;
   const [filter, setFilter] = useState<"all" | PeakKind>("all");
-  const [referencePeakId, setReferencePeakId] = useState<number | null>(null);
-  const [referenceIntegral, setReferenceIntegral] = useState("1");
+  const referencePeakId = sessions[nucleus].referencePeakId;
+  const setReferencePeakId = spectrumSetter("referencePeakId");
+  const referenceIntegral = sessions[nucleus].referenceIntegral;
+  const setReferenceIntegral = spectrumSetter("referenceIntegral");
   const [observedMz, setObservedMz] = useState("");
   const [ionMode, setIonMode] = useState<IonMode>("protonated");
   const [selectedFormulaKey, setSelectedFormulaKey] = useState("");
-  const [excludedPeakIds, setExcludedPeakIds] = useState<number[]>([]);
-  const [multiplicityOverrides, setMultiplicityOverrides] = useState<Record<number, MultiplicityCode>>({});
-  const [verticalScale, setVerticalScale] = useState(1);
-  const [chartMode, setChartMode] = useState<ChartMode>("navigate");
-  const [manualPeaks, setManualPeaks] = useState<Peak[]>([]);
+  const excludedPeakIds = sessions[nucleus].excludedPeakIds;
+  const setExcludedPeakIds = spectrumSetter("excludedPeakIds");
+  const multiplicityOverrides = sessions[nucleus].multiplicityOverrides;
+  const setMultiplicityOverrides = spectrumSetter("multiplicityOverrides");
+  const verticalScale = sessions[nucleus].verticalScale;
+  const setVerticalScale = spectrumSetter("verticalScale");
+  const chartMode = sessions[nucleus].chartMode;
+  const setChartMode = spectrumSetter("chartMode");
+  const manualPeaks = sessions[nucleus].manualPeaks;
+  const setManualPeaks = spectrumSetter("manualPeaks");
   const [searchCopied, setSearchCopied] = useState(false);
   const loadTokenRef = useRef(0);
   const manualPeakIdRef = useRef(1_000_000);
   const fullRange = useMemo<[number, number]>(() => {
-    return finiteExtent(points.map((point) => point.x));
-  }, [points]);
-  const [range, setRange] = useState<[number, number]>([-0.4, 10.2]);
-  const solvent = SOLVENTS.find((item) => item.id === solventId) ?? SOLVENTS[0];
+    return finiteExtent(points.map((point) => point.x), isCarbon ? [-10, 220] : [-0.4, 10.2]);
+  }, [points, isCarbon]);
+  const range = sessions[nucleus].range;
+  const setRange = spectrumSetter("range");
+  const solvent = availableSolvents.find((item) => item.id === solventId) ?? availableSolvents[0];
   const shiftedPoints = useMemo(() => points.map((point) => ({ ...point, x: point.x + offset })), [points, offset]);
   const detectedPeaks = useMemo(() => {
-    const detected = analyzeSpectrum(shiftedPoints, solventId);
+    const detected = isCarbon ? analyzeCarbon(shiftedPoints, solventId) : analyzeSpectrum(shiftedPoints, solventId);
     if (!isDemo) return detected;
     return detected.map((peak) => {
       if (peak.kind !== "main") return peak;
       const expected = DEMO_SIGNALS.find((signal) => signal.integral > 0 && Math.abs(signal.ppm + offset - peak.ppm) < 0.08);
       return expected ? { ...peak, integral: expected.integral, area: expected.integral } : peak;
     });
-  }, [shiftedPoints, solventId, isDemo, offset]);
+  }, [shiftedPoints, solventId, isDemo, offset, isCarbon]);
   const combinedPeaks = useMemo(
     () => [...detectedPeaks, ...manualPeaks].sort((a, b) => b.ppm - a.ppm),
     [detectedPeaks, manualPeaks],
@@ -1798,9 +1911,14 @@ function NmrApp() {
   const fullSpan = Math.max(shiftedFullRange[1] - shiftedFullRange[0], 1e-9);
   const visibleSpan = Math.min(Math.abs(range[1] - range[0]), fullSpan);
   const isZoomed = visibleSpan < fullSpan * 0.995;
+  const protonPeaks = useMemo(() => sessionPeaks(sessions["1H"], "1H"), [sessions]);
+  const carbonPeaks = useMemo(() => sessionPeaks(sessions["13C"], "13C"), [sessions]);
+  const hasProton = protonPeaks.some((peak) => peak.kind === "main");
+  const hasCarbon = carbonPeaks.some((peak) => peak.kind === "main");
+  const evidenceLabel = hasProton && hasCarbon ? "¹H + ¹³C" : hasCarbon ? "¹³C만" : hasProton ? "¹H만" : "입력 없음";
   const formulaSuggestions = useMemo(
-    () => suggestFormulas(observedMz, ionMode, peaks),
-    [observedMz, ionMode, peaks],
+    () => suggestFormulas(observedMz, ionMode, protonPeaks, carbonPeaks),
+    [observedMz, ionMode, protonPeaks, carbonPeaks],
   );
   const selectedFormula = formulaSuggestions.find((suggestion) => suggestion.formulaKey === selectedFormulaKey) ?? null;
   const literaturePeaks = useMemo(
@@ -1833,12 +1951,14 @@ function NmrApp() {
     const hasMassInput = Number.isFinite(mz) && mz > 0;
     if (hasMassInput && !selectedFormula) return [];
 
-    let base = structureCandidates(peaks, isDemo);
+    if (!hasProton && !hasCarbon) return [];
+    let base = hasProton ? structureCandidates(protonPeaks, sessions["1H"].isDemo) : carbonCandidates();
     if (selectedFormula) {
       const formulaMatches = base.filter((candidate) => candidate.formulaKey === selectedFormula.formulaKey);
-      base = formulaMatches.length ? formulaMatches : formulaStructureCandidates(selectedFormula, peaks);
+      base = formulaMatches.length ? formulaMatches : formulaStructureCandidates(selectedFormula, protonPeaks, carbonPeaks);
     }
-    base = base.map((candidate) => candidate.dbePlan ? candidate : applyDbePlan(candidate, peaks));
+    base = base.map((candidate) => candidate.dbePlan ? candidate : hasProton ? applyDbePlan(candidate, protonPeaks) : { ...candidate, dbePlan: dbePlanFor(candidate.formulaKey, candidate.structureType) });
+    base = rankWithCarbon(base, carbonPeaks, hasProton);
 
     const ranked = base
       .map((candidate) => {
@@ -1862,7 +1982,7 @@ function NmrApp() {
       assigned += score;
       return { ...candidate, score };
     });
-  }, [peaks, isDemo, observedMz, ionMode, status, selectedFormula]);
+  }, [protonPeaks, carbonPeaks, hasProton, hasCarbon, sessions, observedMz, ionMode, status, selectedFormula]);
 
   function normalizedIntegral(peak: Peak) {
     if (!hasValidReferenceIntegral) return 0;
@@ -1888,7 +2008,7 @@ function NmrApp() {
       setMessage("선택 구간이 너무 좁습니다. 신호의 양쪽 기준선까지 조금 넓게 드래그해 주세요.");
       return;
     }
-    setManualPeaks((current) => [...current, manualPeak]);
+    setManualPeaks((current) => [...current, isCarbon ? { ...manualPeak, integral: 0, assignment: carbonAssignment(manualPeak.ppm), reason: "직접 선택한 탄소 신호 · 비정량 면적" } : manualPeak]);
     setFilter("all");
     setMessage(`${manualPeak.ppm.toFixed(3)} ppm 피크를 수동 적분 구간으로 추가했습니다. 표에서 다중도와 적분 기준을 바로 조정할 수 있습니다.`);
   }
@@ -1905,6 +2025,7 @@ function NmrApp() {
 
   function amountLabel(peak: Peak) {
     const ratio = normalizedIntegral(peak);
+    if (isCarbon) return "상대 면적 · 탄소 수 아님";
     if (peak.kind === "solvent") return "정량 제외";
     if (peak.kind === "impurity") return "잔류 수분 후보";
     if (!hasValidReferenceIntegral) return "적분값 입력 필요";
@@ -1913,52 +2034,53 @@ function NmrApp() {
   }
 
   function applySolventCorrection(nextId = solventId) {
-    const target = SOLVENTS.find((item) => item.id === nextId) ?? SOLVENTS[0];
-    const provisional = analyzeSpectrum(points, nextId);
+    const target = availableSolvents.find((item) => item.id === nextId) ?? availableSolvents[0];
+    if (!Number.isFinite(target.ppm)) { setMessage("D₂O에는 탄소 기준 신호가 없습니다."); return; }
+    const provisional = isCarbon ? analyzeCarbon(points, nextId) : analyzeSpectrum(points, nextId);
     const solventPeak = provisional
       .filter((peak) => peak.kind === "solvent")
       .sort((a, b) => b.intensity - a.intensity)[0];
-    const nextOffset = solventPeak ? target.ppm - solventPeak.ppm : 0;
+    const carbonSolventLines = provisional.filter((peak) => peak.kind === "solvent" && Math.abs(peak.ppm - target.ppm) < 0.85);
+    const center = isCarbon && carbonSolventLines.length ? (Math.min(...carbonSolventLines.map((peak) => peak.ppm)) + Math.max(...carbonSolventLines.map((peak) => peak.ppm))) / 2 : solventPeak?.ppm;
+    const nextOffset = center !== undefined ? target.ppm - center : 0;
     setRange(([low, high]) => [low + nextOffset - offset, high + nextOffset - offset]);
     setManualPeaks((current) => current.map((peak) => ({ ...peak, ppm: peak.ppm + nextOffset - offset })));
     setOffset(nextOffset);
     setMessage(solventPeak
-      ? `${target.name} 잔류 피크를 ${target.ppm.toFixed(2)} ppm에 맞춰 ${nextOffset >= 0 ? "+" : ""}${nextOffset.toFixed(3)} ppm 보정했습니다.`
+      ? `${target.name} ${isCarbon ? "탄소 용매선 중심을" : "잔류 피크를"} ${target.ppm.toFixed(2)} ppm에 맞춰 ${nextOffset >= 0 ? "+" : ""}${nextOffset.toFixed(3)} ppm 보정했습니다.`
       : `${target.name} 기준 피크를 확실히 찾지 못해 보정값을 0.000 ppm으로 유지했습니다.`);
   }
 
-  function showDataset(dataset: ParsedSpectrum, index: number, total: number, announce = true) {
+  function showDataset(dataset: ParsedSpectrum, index: number, total: number) {
+    const target = nucleusKey(dataset.nucleus) ?? nucleus;
     const cleaned = sanitizeSpectrumPoints(dataset.points);
     if (cleaned.length < 16) throw new Error("표시할 유효 데이터 포인트가 부족합니다.");
-    const [rangeLow, rangeHigh] = finiteExtent(cleaned.map((point) => point.x), [0, 0]);
-    if (Math.abs(rangeHigh - rangeLow) < 1e-9) throw new Error("화학적 이동값 범위를 확인할 수 없습니다.");
-    const [, signalHigh] = finiteExtent(cleaned.map((point) => point.y), [0, 0]);
-    if (!Number.isFinite(signalHigh)) throw new Error("스펙트럼 세기값이 올바르지 않습니다.");
-    const suggested = solventFromMetadata(dataset.solvent) ?? solventId;
-    setPoints(cleaned);
-    setFileName(dataset.fileName);
-    setSource(dataset.source);
-    setNucleus(dataset.nucleus || "1H");
-    setFrequency(dataset.frequency);
-    setSolventId(suggested);
-    setOffset(0);
-    setRange([rangeLow, rangeHigh]);
-    setIsDemo(false);
-    setReferencePeakId(null);
-    setReferenceIntegral("1");
-    setExcludedPeakIds([]);
-    setMultiplicityOverrides({});
-    setManualPeaks([]);
-    setChartMode("navigate");
-    setSelectedFormulaKey("");
-    setVerticalScale(1);
-    setActiveDataset(index);
+    setSessions((previous) => ({ ...previous, [target]: { ...emptySession(target), points: cleaned, fileName: dataset.fileName,
+      source: dataset.source, frequency: dataset.frequency, solventId: solventFromMetadata(dataset.solvent) ?? previous[target].solventId,
+      range: finiteExtent(cleaned.map((point) => point.x)), activeDataset: index } }));
+    setNucleus(target);
     setStatus("ready");
-    if (announce) {
-      const countMessage = total > 1 ? `${total}개 1D 스펙트럼 중 ${index + 1}번을 표시합니다. ` : "";
-      const frequencyMessage = dataset.frequency ? ` 측정 주파수 ${dataset.frequency.toFixed(2)} MHz도 자동 확인했습니다.` : " MHz 정보는 없지만 처리 스펙트럼 분석에는 필수가 아닙니다.";
-      setMessage(dataset.note ?? `${countMessage}${cleaned.length.toLocaleString()}개 포인트를 읽었습니다.${frequencyMessage}`);
+    setMessage(dataset.note ?? `${total}개 스펙트럼 · ${target} 데이터를 읽었습니다.`);
+  }
+  function acceptDatasets(incoming: ParsedSpectrum[]) {
+    const supported = incoming.filter((dataset) => !dataset.nucleus || nucleusKey(dataset.nucleus));
+    if (!supported.length) throw new Error("¹H 또는 ¹³C 1D 데이터가 필요합니다.");
+    // Unknown text/binary inputs belong to the selected upload tab, not an assumed proton channel.
+    const normalized = supported.map((dataset) => ({ ...dataset, nucleus: nucleusKey(dataset.nucleus) ?? nucleus }));
+    for (const dataset of normalized) {
+      const cleaned = sanitizeSpectrumPoints(dataset.points);
+      const [low, high] = finiteExtent(cleaned.map((point) => point.x), [0, 0]);
+      if (cleaned.length < 16 || high - low < 1e-9) throw new Error("유효한 ppm 범위와 16개 이상의 데이터 포인트가 필요합니다.");
     }
+    setDatasets(normalized);
+    setSessions((previous) => ({ "1H": previous["1H"].isDemo ? emptySession("1H") : previous["1H"], "13C": previous["13C"] }));
+    const seen = new Set<string>();
+    normalized.forEach((dataset, index) => {
+      if (seen.has(dataset.nucleus)) return;
+      seen.add(dataset.nucleus);
+      showDataset(dataset, index, normalized.length);
+    });
+    setNucleus(nucleusKey(normalized[0].nucleus)!);
   }
 
   async function loadFiles(files: File[]) {
@@ -1972,23 +2094,26 @@ function NmrApp() {
       const brukerFolderDatasets = await parseBrukerFolderDatasets(readableFiles);
       if (brukerFolderDatasets.length) {
         if (loadToken !== loadTokenRef.current) return;
-        setDatasets(brukerFolderDatasets);
-        showDataset(brukerFolderDatasets[0], 0, brukerFolderDatasets.length);
+        acceptDatasets(brukerFolderDatasets);
+        return;
+      }
+      const textSpectra = await Promise.all(readableFiles.map(parseTextXyFile));
+      if (textSpectra.every((dataset) => dataset !== null)) {
+        if (loadToken !== loadTokenRef.current) return;
+        acceptDatasets(textSpectra as ParsedSpectrum[]);
         return;
       }
       if (readableFiles.length === 1) {
         const textSpectrum = await parseTextXyFile(readableFiles[0]);
         if (textSpectrum) {
           if (loadToken !== loadTokenRef.current) return;
-          setDatasets([textSpectrum]);
-          showDataset(textSpectrum, 0, 1);
+          acceptDatasets([textSpectrum]);
           return;
         }
         const standaloneBruker = await parseStandaloneBrukerBinary(readableFiles[0]);
         if (standaloneBruker) {
           if (loadToken !== loadTokenRef.current) return;
-          setDatasets([standaloneBruker]);
-          showDataset(standaloneBruker, 0, 1);
+          acceptDatasets([standaloneBruker]);
           return;
         }
       }
@@ -1998,8 +2123,7 @@ function NmrApp() {
         const flatBruker = await parseFlatBruker(readableFiles);
         if (flatBruker) {
           if (loadToken !== loadTokenRef.current) return;
-          setDatasets([flatBruker]);
-          showDataset(flatBruker, 0, 1);
+          acceptDatasets([flatBruker]);
           return;
         }
       }
@@ -2017,7 +2141,11 @@ function NmrApp() {
           : `OPEN · ${extension}`;
       const oneDimensional = parsed.filter((entry) => Number(entry.info?.dimension ?? entry.description?.dimension ?? 1) === 1);
       const processed = oneDimensional.filter((entry) => !entry.info?.isFid && !entry.description?.isFid);
-      const preferred = processed.length ? processed : oneDimensional;
+      const preferred = oneDimensional.filter((entry) => {
+        if (!entry.info?.isFid && !entry.description?.isFid) return true;
+        return !processed.some((other) => other.source?.name === entry.source?.name && other.source?.expno === entry.source?.expno
+          && String(firstValue(other.info?.nucleus)) === String(firstValue(entry.info?.nucleus)));
+      });
       if (!preferred.length) throw new Error("지원되는 1D NMR 데이터가 없습니다.");
       const normalized = preferred.map((entry, index: number) => {
         const sourceInfo = entry.source;
@@ -2032,8 +2160,7 @@ function NmrApp() {
         const sourceLabel = sourceInfo?.isFT ? `${vendor} · PROCESSED` : vendor;
         return normalizeParsed(entry, label, sourceLabel);
       });
-      setDatasets(normalized);
-      showDataset(normalized[0], 0, normalized.length);
+      acceptDatasets(normalized);
     } catch (error) {
       if (loadToken !== loadTokenRef.current) return;
       setStatus("error");
@@ -2047,7 +2174,7 @@ function NmrApp() {
   }
 
   function exportCsv() {
-    const lines = ["ppm,multiplicity,scaled_integral,amount_label,classification,confidence,assignment", ...peaks.map((peak) => [peak.ppm.toFixed(4), peak.multiplicity, hasValidReferenceIntegral ? normalizedIntegral(peak).toFixed(3) : "", amountLabel(peak), peak.kind, peak.confidence, `\"${peak.assignment}\"`].join(","))];
+    const lines = [`nucleus,ppm,multiplicity,${isCarbon ? "relative_area" : "scaled_integral"},amount_label,classification,confidence,assignment`, ...peaks.map((peak) => [nucleus, peak.ppm.toFixed(4), peak.multiplicity, hasValidReferenceIntegral ? normalizedIntegral(peak).toFixed(3) : "", amountLabel(peak), peak.kind, peak.confidence, `\"${peak.assignment}\"`].join(","))];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -2068,6 +2195,12 @@ function NmrApp() {
         </div>
       </header>
 
+      <div className="nucleus-tabs" role="tablist" aria-label="NMR 핵종 선택">
+        {(["1H", "13C"] as const).map((value) => <button key={value} role="tab" aria-selected={nucleus === value} disabled={status === "loading"} className={nucleus === value ? "active" : ""} onClick={() => setNucleus(value)}>{value === "1H" ? "¹H NMR" : "¹³C NMR"}<small>{sessions[value].points.length ? sessions[value].isDemo ? "예제" : "입력됨" : "미입력"}</small></button>)}
+        <button disabled={status === "loading"} onClick={() => { setSessions((previous) => ({ ...previous, [nucleus]: emptySession(nucleus) })); setSelectedFormulaKey(""); setMessage(`${nucleus} 입력을 비웠습니다.`); }}>현재 탭 비우기</button>
+        <button disabled={status === "loading"} onClick={() => { setSessions({ "1H": emptySession("1H"), "13C": emptySession("13C") }); setDatasets([]); setObservedMz(""); setSelectedFormulaKey(""); setMessage("새 시료의 데이터를 업로드하세요."); }}>새 시료</button>
+      </div>
+      <p className="helper-text">같은 시료의 ¹H·¹³C를 업로드하세요. 핵종 정보 없는 파일은 선택한 탭에 입력됩니다. 구조 예측: {evidenceLabel}</p>
       <section
         className={`upload-zone ${status}`}
         onDragOver={(event: DragEvent) => event.preventDefault()}
@@ -2096,7 +2229,7 @@ function NmrApp() {
       <div className={`notice ${status}`} role="status">
         <span>{status === "loading" ? "◌" : status === "error" ? "!" : "✓"}</span>
         <p>{message}</p>
-        {status === "error" && <button onClick={() => { loadTokenRef.current += 1; setStatus("ready"); setMessage("예제 데이터를 다시 표시합니다."); setPoints(demoPoints); setFileName("ethyl-benzoate_demo.dx"); setSource("DEMO · JCAMP-DX"); setNucleus("1H"); setFrequency(400.13); setDatasets([]); setActiveDataset(0); setSolventId("cdcl3"); setOffset(0); setIsDemo(true); setReferencePeakId(null); setReferenceIntegral("1"); setExcludedPeakIds([]); setMultiplicityOverrides({}); setManualPeaks([]); setChartMode("navigate"); setSelectedFormulaKey(""); setVerticalScale(1); setRange([-0.4, 10.2]); }}>예제로 복구</button>}
+        {status === "error" && <button onClick={() => { setStatus("ready"); setMessage("기존 데이터를 유지합니다. 파일을 다시 선택하세요."); }}>기존 분석으로 돌아가기</button>}
       </div>
 
       <section className="workflow" aria-label="analysis progress">
@@ -2113,7 +2246,7 @@ function NmrApp() {
           <div className="panel-heading">
             <div>
               <p className="panel-kicker">SPECTRUM</p>
-              {datasets.length > 1 ? (
+              {datasets.filter((dataset) => nucleusKey(dataset.nucleus) === nucleus).length > 1 ? (
                 <div className="dataset-picker">
                   <label htmlFor="dataset">스펙트럼 선택</label>
                   <select
@@ -2124,7 +2257,7 @@ function NmrApp() {
                       showDataset(datasets[index], index, datasets.length);
                     }}
                   >
-                    {datasets.map((dataset, index) => <option value={index} key={`${dataset.fileName}-${index}`}>{index + 1}. {dataset.fileName}</option>)}
+                    {datasets.map((dataset, index) => nucleusKey(dataset.nucleus) === nucleus && <option value={index} key={`${dataset.fileName}-${index}`}>{index + 1}. {dataset.fileName}</option>)}
                   </select>
                 </div>
               ) : <h2>{fileName}</h2>}
@@ -2145,7 +2278,9 @@ function NmrApp() {
             <button className={chartMode === "navigate" ? "active" : ""} onClick={() => setChartMode("navigate")}><span>↔</span><b>보기 조작</b><small>좌클릭 확대 · 우클릭 축소</small></button>
             <button className={chartMode === "add-peak" ? "active add" : "add"} onClick={() => setChartMode("add-peak")}><span>＋</span><b>피크 구간 추가</b><small>드래그한 범위를 표에 적분</small></button>
           </div>
+          {!points.length && <p className="empty-spectrum">{nucleus} 데이터가 없습니다. 위에서 파일을 업로드하세요.</p>}
           <SpectrumChart
+            key={nucleus}
             points={shiftedPoints}
             peaks={peaks}
             range={range}
@@ -2177,17 +2312,17 @@ function NmrApp() {
                 setMessage(`${SOLVENTS.find((item) => item.id === next)?.name} 기준값을 선택했습니다. 자동 보정을 실행하세요.`);
               }}
             >
-              {SOLVENTS.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.ppm.toFixed(2)} ppm</option>)}
+              {availableSolvents.map((item) => <option key={item.id} value={item.id}>{item.name} · {Number.isFinite(item.ppm) ? `${item.ppm.toFixed(2)} ppm` : "탄소 없음"}</option>)}
             </select>
           </div>
           <div className="reference-card">
-            <div><span>기준 신호</span><strong>{solvent.ppm.toFixed(2)} <small>ppm</small></strong></div>
+            <div><span>기준 신호</span><strong>{Number.isFinite(solvent.ppm) ? solvent.ppm.toFixed(2) : "—"} <small>ppm</small></strong></div>
             <div><span>적용 보정</span><strong className={offset === 0 ? "" : "accent"}>{offset >= 0 ? "+" : ""}{offset.toFixed(3)} <small>ppm</small></strong></div>
           </div>
           <button className="button correction" onClick={() => applySolventCorrection()}>
             <span>◎</span> 용매 피크 자동 보정
           </button>
-          <p className="helper-text">기준값 주변에 큰 피크와 작은 피크가 함께 있어도 가장 큰 선 하나를 singlet 용매 피크로 맞춥니다.</p>
+          <p className="helper-text">{isCarbon ? "탄소 용매 영역의 양끝 선 중심을 기준으로 보정합니다. 용매와 시료 신호가 겹치면 확인이 필요합니다." : "기준값 주변에 큰 피크와 작은 피크가 함께 있어도 가장 큰 선 하나를 singlet 용매 피크로 맞춥니다."}</p>
           <div className="quality-meter">
             <div><span>Reference confidence</span><b>{peaks.some((peak) => peak.kind === "solvent") ? "HIGH" : "REVIEW"}</b></div>
             <div className="meter"><i style={{ width: peaks.some((peak) => peak.kind === "solvent") ? "94%" : "48%" }} /></div>
@@ -2211,6 +2346,7 @@ function NmrApp() {
               ))}
             </div>
           </div>
+          {isCarbon && <p className="helper-text">¹³C 분석은 ppm과 신호 수를 사용합니다. 상대 면적·다중도는 확인용이며 탄소 수나 수소 수로 환산하지 않습니다.</p>}
           <div className="integration-reference">
             <div className="reference-copy">
               <span className="reference-icon">∫</span>
@@ -2235,7 +2371,7 @@ function NmrApp() {
                   aria-invalid={!hasValidReferenceIntegral}
                   aria-describedby="integral-input-help"
                 />
-                <b>H</b>
+                <b>{isCarbon ? "상대" : "H"}</b>
               </div>
               <small id="integral-input-help" className={hasValidReferenceIntegral ? "integral-input-help" : "integral-input-error"}>
                 {hasValidReferenceIntegral ? "전체를 지운 뒤 새 값을 입력할 수 있습니다." : "0보다 큰 적분값을 입력하세요."}
@@ -2244,7 +2380,7 @@ function NmrApp() {
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>분류</th><th>δ / ppm</th><th>다중도</th><th>보정 적분</th><th>예상 배정</th><th>신뢰도</th><th>사용자 조정</th></tr></thead>
+              <thead><tr><th>분류</th><th>δ / ppm</th><th>다중도</th><th>{isCarbon ? "상대 면적" : "보정 적분"}</th><th>예상 배정</th><th>신뢰도</th><th>사용자 조정</th></tr></thead>
               <tbody>
                 {shownPeaks.map((peak) => {
                   const ratio = normalizedIntegral(peak);
@@ -2274,7 +2410,7 @@ function NmrApp() {
                     </td>
                     <td>
                       <span className={`integral ${peak.kind}`}><i style={{ width: `${hasValidReferenceIntegral ? Math.min(100, (ratio / Math.max(referenceIntegralValue, 1)) * 28) : 0}%` }} />{formatIntegral(ratio)}</span>
-                      <small className={peak.kind === "impurity" ? "amount impurity" : "amount"}>{referencePeak?.id === peak.id ? (hasValidReferenceIntegral ? `기준 · ${referenceIntegralValue.toFixed(2)}H` : "기준 · 값 입력 필요") : amountLabel(peak)}</small>
+                      <small className={peak.kind === "impurity" ? "amount impurity" : "amount"}>{referencePeak?.id === peak.id ? (hasValidReferenceIntegral ? `기준 · ${referenceIntegralValue.toFixed(2)}${isCarbon ? " (상대)" : "H"}` : "기준 · 값 입력 필요") : amountLabel(peak)}</small>
                     </td>
                     <td><strong>{peak.assignment}</strong><small>{peak.reason}</small></td>
                     <td><span className="confidence"><i style={{ width: `${peak.confidence}%` }} /></span><b>{peak.confidence}%</b></td>
@@ -2397,7 +2533,7 @@ function NmrApp() {
                 <div className="candidate-nmr-compare">
                   <b>관측 NMR 값 비교</b>
                   {mainPeaks.slice(0, 4).map((peak) => {
-                    const comparison = comparePeakToCandidate(candidate, peak);
+                    const comparison = isCarbon ? compareCarbon(candidate, peak) : comparePeakToCandidate(candidate, peak);
                     return <span className={comparison.match ? "match" : "review"} key={peak.id}><strong>{peak.ppm.toFixed(3)} {peak.multiplicity}</strong><small>{comparison.label}</small></span>;
                   })}
                 </div>
@@ -2409,12 +2545,12 @@ function NmrApp() {
           </div>
           {selectedFormula && candidates.length > 0 && (
             <div className="nmr-assignment-panel">
-              <div className="assignment-heading"><div><b>구조–NMR 예상 배정</b><small><FormulaText formulaKey={selectedFormula.formulaKey} /> 구조 가설 기준</small></div><span>¹H</span></div>
+              <div className="assignment-heading"><div><b>구조–NMR 예상 배정</b><small><FormulaText formulaKey={selectedFormula.formulaKey} /> 구조 가설 기준</small></div><span>{nucleus}</span></div>
               <div className="assignment-list">
                 {mainPeaks.map((peak, index) => (
                   <div className="assignment-row" key={peak.id}>
-                    <span className="assignment-index">H{index + 1}</span>
-                    <div><strong>{peak.ppm.toFixed(3)} ppm</strong><small>{peak.multiplicity} · {peak.multiplicityName} · 적분 {formatIntegral(normalizedIntegral(peak))}H</small></div>
+                    <span className="assignment-index">{isCarbon ? "C" : "H"}{index + 1}</span>
+                    <div><strong>{peak.ppm.toFixed(3)} ppm</strong><small>{peak.multiplicity} · {peak.multiplicityName} · 적분 {formatIntegral(normalizedIntegral(peak))}{isCarbon ? " (상대 면적)" : "H"}</small></div>
                     <p>{peak.assignment}</p>
                   </div>
                 ))}
@@ -2424,7 +2560,7 @@ function NmrApp() {
           )}
           <div className="caution-box">
             <b>구조 확정 전 확인</b>
-            <p>후보별 %는 원자가·DBE·1D ¹H ppm·확정 다중도·적분과 입력 m/z를 반영한 상대 가능성(합계 100%)입니다. 합성 가능한 결합을 우선하되 입체화학과 정확한 결합 위치는 ¹³C, COSY, HSQC, HMBC 또는 표준물질로 검증하세요.</p>
+            <p>현재 근거: {evidenceLabel}. 후보 점수는 입력된 ¹H ppm·다중도·적분, ¹³C ppm·신호 수 및 m/z를 참고하는 규칙 기반 비교값이며 검증된 확률이 아닙니다. 합성 가능한 결합을 우선하되 입체화학과 정확한 결합 위치는 ¹³C, COSY, HSQC, HMBC 또는 표준물질로 검증하세요.</p>
           </div>
         </article>
       </section>
