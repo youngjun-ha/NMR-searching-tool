@@ -514,3 +514,11 @@ footer .footer-email:hover { color: #66716d; text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
+
+/* Nucleus selection shares the existing spectrum workspace. */
+.nucleus-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 10px; }
+.nucleus-tabs button { border: 1px solid #cbdad6; background: #fff; border-radius: 10px; padding: 12px 18px; color: #28554c; cursor: pointer; }
+.nucleus-tabs button.active { background: #145c4c; color: #fff; border-color: #145c4c; }
+.nucleus-tabs button small { margin-left: 12px; opacity: .75; }
+.nucleus-tabs button:disabled { opacity: .5; cursor: wait; }
+.empty-spectrum { padding: 22px; text-align: center; color: #58766d; }
