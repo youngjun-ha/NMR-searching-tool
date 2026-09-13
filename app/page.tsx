@@ -1748,6 +1748,7 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
 }
 
 type Nucleus = "1H" | "13C";
+function nucleusLabel(value: Nucleus) { return value === "13C" ? "¹³C" : "¹H"; }
 function nucleusKey(value: string): Nucleus | null {
   const normalized = value.replace(/[<>^\s_\-]/g, "").toUpperCase();
   if (/(?:13C|C13|¹³C|CARBON)/.test(normalized)) return "13C";
@@ -1798,7 +1799,7 @@ type SpectrumSession = {
   verticalScale: number; chartMode: ChartMode; manualPeaks: Peak[]; range: [number, number]; activeDataset: number;
 };
 function emptySession(nucleus: Nucleus): SpectrumSession {
-  return { points: [], fileName: `${nucleus} 데이터를 업로드하세요`, source: "미입력", frequency: null,
+  return { points: [], fileName: `${nucleusLabel(nucleus)} 데이터를 업로드하세요`, source: "미입력", frequency: null,
     solventId: "cdcl3", offset: 0, isDemo: false, referencePeakId: null, referenceIntegral: "1",
     excludedPeakIds: [], multiplicityOverrides: {}, verticalScale: 1, chartMode: "navigate", manualPeaks: [],
     range: nucleus === "13C" ? [-10, 220] : [-0.4, 10.2], activeDataset: -1 };
@@ -1857,7 +1858,7 @@ function NmrApp() {
   const [nucleus, setNucleus] = useState<Nucleus>("1H");
   const [sessions, setSessions] = useState<Record<Nucleus, SpectrumSession>>(() => ({
     "1H": { ...emptySession("1H"), points: demoPoints, fileName: "ethyl-benzoate_demo.dx", source: "DEMO · JCAMP-DX", frequency: 400.13, isDemo: true },
-    "13C": { ...emptySession("13C"), points: demoCarbonPoints, fileName: "ethyl-benzoate_13C_demo.dx", source: "DEMO · ¹³C", frequency: 100.61, isDemo: true },
+    "13C": { ...emptySession("13C"), points: demoCarbonPoints, fileName: "ethyl-benzoate_¹³C_demo.dx", source: "DEMO · ¹³C", frequency: 100.61, isDemo: true },
   }));
   function spectrumSetter<K extends keyof SpectrumSession>(key: K) {
     return (value: SpectrumSession[K] | ((previous: SpectrumSession[K]) => SpectrumSession[K])) => setSessions((previous) => ({ ...previous, [nucleus]: { ...previous[nucleus], [key]: typeof value === "function" ? (value as (previous: SpectrumSession[K]) => SpectrumSession[K])(previous[nucleus][key]) : value } }));
@@ -2101,7 +2102,7 @@ function NmrApp() {
       range: finiteExtent(cleaned.map((point) => point.x)), activeDataset: index } }));
     setNucleus(target);
     setStatus("ready");
-    setMessage(dataset.note ?? `${total}개 스펙트럼 · ${target} 데이터를 읽었습니다.`);
+    setMessage(dataset.note ?? `${total}개 스펙트럼 · ${nucleusLabel(target)} 데이터를 읽었습니다.`);
   }
   function acceptDatasets(incoming: ParsedSpectrum[]) {
     if (!incoming.length) throw new Error("¹H 또는 ¹³C 1D 데이터가 필요합니다.");
@@ -2322,7 +2323,7 @@ function NmrApp() {
               ) : <h2>{fileName}</h2>}
             </div>
             <div className="dataset-meta">
-              <span>{source}</span><span>{nucleus}</span>
+              <span>{source}</span><span>{nucleusLabel(nucleus)}</span>
               {frequency ? <span title="파일 메타데이터에서 자동 판독">AUTO · {frequency.toFixed(2)} MHz</span> : <span>MHz 정보 없음</span>}
             </div>
           </div>
@@ -2337,7 +2338,7 @@ function NmrApp() {
             <button className={chartMode === "navigate" ? "active" : ""} onClick={() => setChartMode("navigate")}><span>↔</span><b>보기 조작</b><small>좌클릭 확대 · 우클릭 축소</small></button>
             <button className={chartMode === "add-peak" ? "active add" : "add"} onClick={() => setChartMode("add-peak")}><span>＋</span><b>피크 구간 추가</b><small>드래그한 범위를 표에 적분</small></button>
           </div>
-          {!points.length && <p className="empty-spectrum">{nucleus} 데이터가 없습니다. 위에서 파일을 업로드하세요.</p>}
+          {!points.length && <p className="empty-spectrum">{nucleusLabel(nucleus)} 데이터가 없습니다. 위에서 파일을 업로드하세요.</p>}
           <SpectrumChart
             key={nucleus}
             points={shiftedPoints}
@@ -2604,7 +2605,7 @@ function NmrApp() {
           </div>
           {selectedFormula && candidates.length > 0 && (
             <div className="nmr-assignment-panel">
-              <div className="assignment-heading"><div><b>구조–NMR 예상 배정</b><small><FormulaText formulaKey={selectedFormula.formulaKey} /> 구조 가설 기준</small></div><span>{nucleus}</span></div>
+              <div className="assignment-heading"><div><b>구조–NMR 예상 배정</b><small><FormulaText formulaKey={selectedFormula.formulaKey} /> 구조 가설 기준</small></div><span>{nucleusLabel(nucleus)}</span></div>
               <div className="assignment-list">
                 {mainPeaks.map((peak, index) => (
                   <div className="assignment-row" key={peak.id}>
