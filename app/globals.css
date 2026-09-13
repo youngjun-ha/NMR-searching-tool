@@ -515,10 +515,13 @@ footer .footer-email:hover { color: #66716d; text-decoration: underline; }
   * { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
 
-/* Nucleus selection shares the existing spectrum workspace. */
-.nucleus-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 10px; }
-.nucleus-tabs button { border: 1px solid #cbdad6; background: #fff; border-radius: 10px; padding: 12px 18px; color: #28554c; cursor: pointer; }
-.nucleus-tabs button.active { background: #145c4c; color: #fff; border-color: #145c4c; }
-.nucleus-tabs button small { margin-left: 12px; opacity: .75; }
-.nucleus-tabs button:disabled { opacity: .5; cursor: wait; }
+/* Nucleus toggle lives inside the spectrum heading. */
+.nucleus-toggle { display: inline-flex; gap: 3px; padding: 4px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 12px; background: #edf1e9; }
+.nucleus-toggle button { min-width: 92px; padding: 9px 17px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 14px; font-weight: 700; cursor: pointer; transition: background .16s ease, color .16s ease; }
+.nucleus-toggle button.active { background: var(--lime); color: var(--ink); box-shadow: 0 1px 3px rgba(16,44,43,.12); }
+.nucleus-toggle button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.nucleus-toggle button:disabled { opacity: .5; cursor: wait; }
+.spectrum-data-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 10px; }
+.spectrum-data-actions button { border: 1px solid var(--line); background: var(--white); border-radius: 8px; padding: 8px 12px; color: var(--ink-2); cursor: pointer; }
+.spectrum-data-actions button:disabled { opacity: .5; cursor: wait; }
 .empty-spectrum { padding: 22px; text-align: center; color: #58766d; }

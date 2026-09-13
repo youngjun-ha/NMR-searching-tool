@@ -2195,8 +2195,7 @@ function NmrApp() {
         </div>
       </header>
 
-      <div className="nucleus-tabs" role="tablist" aria-label="NMR 핵종 선택">
-        {(["1H", "13C"] as const).map((value) => <button key={value} role="tab" aria-selected={nucleus === value} disabled={status === "loading"} className={nucleus === value ? "active" : ""} onClick={() => setNucleus(value)}>{value === "1H" ? "¹H NMR" : "¹³C NMR"}<small>{sessions[value].points.length ? sessions[value].isDemo ? "예제" : "입력됨" : "미입력"}</small></button>)}
+      <div className="spectrum-data-actions">
         <button disabled={status === "loading"} onClick={() => { setSessions((previous) => ({ ...previous, [nucleus]: emptySession(nucleus) })); setSelectedFormulaKey(""); setMessage(`${nucleus} 입력을 비웠습니다.`); }}>현재 탭 비우기</button>
         <button disabled={status === "loading"} onClick={() => { setSessions({ "1H": emptySession("1H"), "13C": emptySession("13C") }); setDatasets([]); setObservedMz(""); setSelectedFormulaKey(""); setMessage("새 시료의 데이터를 업로드하세요."); }}>새 시료</button>
       </div>
@@ -2245,7 +2244,9 @@ function NmrApp() {
         <article className="panel spectrum-panel">
           <div className="panel-heading">
             <div>
-              <p className="panel-kicker">SPECTRUM</p>
+              <div className="nucleus-toggle" role="tablist" aria-label="NMR 핵종 선택">
+                {(["1H", "13C"] as const).map((value) => <button key={value} role="tab" aria-selected={nucleus === value} disabled={status === "loading"} className={nucleus === value ? "active" : ""} onClick={() => setNucleus(value)}>{value === "1H" ? "¹H NMR" : "¹³C NMR"}</button>)}
+              </div>
               {datasets.filter((dataset) => nucleusKey(dataset.nucleus) === nucleus).length > 1 ? (
                 <div className="dataset-picker">
                   <label htmlFor="dataset">스펙트럼 선택</label>
