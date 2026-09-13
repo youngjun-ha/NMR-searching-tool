@@ -2195,7 +2195,6 @@ function NmrApp() {
         </div>
       </header>
 
-      <p className="helper-text">같은 시료의 ¹H·¹³C를 업로드하세요. 핵종 정보 없는 파일은 선택한 탭에 입력됩니다. 구조 예측: {evidenceLabel}</p>
       <section
         className={`upload-zone ${status}`}
         onDragOver={(event: DragEvent) => event.preventDefault()}
