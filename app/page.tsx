@@ -1726,9 +1726,26 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
 
 type Nucleus = "1H" | "13C";
 function nucleusKey(value: string): Nucleus | null {
-  const normalized = value.replace(/[<>^\s]/g, "").toUpperCase();
-  if (["13C", "C13", "¹³C"].includes(normalized)) return "13C";
-  if (["1H", "H1", "¹H"].includes(normalized)) return "1H";
+  const normalized = value.replace(/[<>^\s_\-]/g, "").toUpperCase();
+  if (/(?:13C|C13|¹³C|CARBON)/.test(normalized)) return "13C";
+  if (/(?:1H|H1|¹H|PROTON)/.test(normalized)) return "1H";
+  return null;
+}
+
+function inferDatasetNucleus(dataset: ParsedSpectrum): Nucleus | null {
+  const metadataNucleus = nucleusKey(dataset.nucleus);
+  if (metadataNucleus) return metadataNucleus;
+
+  const label = `${dataset.fileName} ${dataset.source}`;
+  const labelNucleus = nucleusKey(label);
+  if (labelNucleus) return labelNucleus;
+  if (/(?:^|[^a-z])(?:dept(?:45|90|135)?|apt|jmod|zgpg\d*|carbon)(?:[^a-z]|$)/i.test(label)) return "13C";
+
+  const [low, high] = finiteExtent(dataset.points.map((point) => point.x), [0, 0]);
+  const ppmSpan = Math.abs(high - low);
+  if (high > 25 || ppmSpan > 25) return "13C";
+  if (dataset.frequency && dataset.frequency >= 220) return "1H";
+  if (dataset.frequency && dataset.frequency > 0 && dataset.frequency < 220 && high > 12) return "13C";
   return null;
 }
 // Carbon solvent centers; D2O contains no carbon. Acetone has two carbon sites.
@@ -2052,7 +2069,7 @@ function NmrApp() {
   }
 
   function showDataset(dataset: ParsedSpectrum, index: number, total: number) {
-    const target = nucleusKey(dataset.nucleus) ?? nucleus;
+    const target = inferDatasetNucleus(dataset) ?? nucleus;
     const cleaned = sanitizeSpectrumPoints(dataset.points);
     if (cleaned.length < 16) throw new Error("표시할 유효 데이터 포인트가 부족합니다.");
     setSessions((previous) => ({ ...previous, [target]: { ...emptySession(target), points: cleaned, fileName: dataset.fileName,
@@ -2063,24 +2080,45 @@ function NmrApp() {
     setMessage(dataset.note ?? `${total}개 스펙트럼 · ${target} 데이터를 읽었습니다.`);
   }
   function acceptDatasets(incoming: ParsedSpectrum[]) {
-    const supported = incoming.filter((dataset) => !dataset.nucleus || nucleusKey(dataset.nucleus));
-    if (!supported.length) throw new Error("¹H 또는 ¹³C 1D 데이터가 필요합니다.");
-    // Unknown text/binary inputs belong to the selected upload tab, not an assumed proton channel.
-    const normalized = supported.map((dataset) => ({ ...dataset, nucleus: nucleusKey(dataset.nucleus) ?? nucleus }));
+    if (!incoming.length) throw new Error("¹H 또는 ¹³C 1D 데이터가 필요합니다.");
+    // Metadata, experiment label, frequency and ppm range are considered in that order.
+    // Only a truly ambiguous standalone spectrum falls back to the tab selected at upload time.
+    const normalized = incoming.map((dataset) => ({ ...dataset, nucleus: inferDatasetNucleus(dataset) ?? nucleus }));
     for (const dataset of normalized) {
       const cleaned = sanitizeSpectrumPoints(dataset.points);
       const [low, high] = finiteExtent(cleaned.map((point) => point.x), [0, 0]);
       if (cleaned.length < 16 || high - low < 1e-9) throw new Error("유효한 ppm 범위와 16개 이상의 데이터 포인트가 필요합니다.");
     }
+    const firstByNucleus = (["1H", "13C"] as const).map((target) => ({
+      target,
+      match: normalized.map((dataset, index) => ({ dataset, index })).find(({ dataset }) => dataset.nucleus === target),
+    }));
     setDatasets(normalized);
-    setSessions((previous) => ({ "1H": previous["1H"].isDemo ? emptySession("1H") : previous["1H"], "13C": previous["13C"] }));
-    const seen = new Set<string>();
-    normalized.forEach((dataset, index) => {
-      if (seen.has(dataset.nucleus)) return;
-      seen.add(dataset.nucleus);
-      showDataset(dataset, index, normalized.length);
+    setSessions((previous) => {
+      const next = { ...previous };
+      if (next["1H"].isDemo) next["1H"] = emptySession("1H");
+      for (const { target, match } of firstByNucleus) {
+        if (!match) continue;
+        const cleaned = sanitizeSpectrumPoints(match.dataset.points);
+        next[target] = {
+          ...emptySession(target),
+          points: cleaned,
+          fileName: match.dataset.fileName,
+          source: match.dataset.source,
+          frequency: match.dataset.frequency,
+          solventId: solventFromMetadata(match.dataset.solvent) ?? previous[target].solventId,
+          range: finiteExtent(cleaned.map((point) => point.x), target === "13C" ? [-10, 220] : [-0.4, 10.2]),
+          activeDataset: match.index,
+        };
+      }
+      return next;
     });
-    setNucleus(nucleusKey(normalized[0].nucleus)!);
+    const protonCount = normalized.filter((dataset) => dataset.nucleus === "1H").length;
+    const carbonCount = normalized.filter((dataset) => dataset.nucleus === "13C").length;
+    const firstTarget = protonCount ? "1H" : "13C";
+    setNucleus(firstTarget);
+    setStatus("ready");
+    setMessage(`자동 분류 완료 · ¹H ${protonCount}개 · ¹³C ${carbonCount}개. 위 토글로 그래프를 전환할 수 있습니다.`);
   }
 
   async function loadFiles(files: File[]) {

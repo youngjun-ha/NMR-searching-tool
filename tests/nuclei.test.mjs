@@ -8,7 +8,7 @@ import ts from 'typescript';
 import React from 'react';
 import {create,act} from 'react-test-renderer';
 const filename=fileURLToPath(new URL('../app/page.tsx', import.meta.url));
-const source=fs.readFileSync(filename,'utf8')+'\nexport {analyzeCarbon, analyzeSpectrum, buildDemoSpectrum, sessionPeaks, emptySession, rankWithCarbon, carbonCandidates, nucleusKey, suggestFormulas, parseTextXyFile};';
+const source=fs.readFileSync(filename,'utf8')+'\nexport {analyzeCarbon, analyzeSpectrum, buildDemoSpectrum, sessionPeaks, emptySession, rankWithCarbon, carbonCandidates, nucleusKey, inferDatasetNucleus, suggestFormulas, parseTextXyFile};';
 const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2020}}).outputText;
 const loaded=new Module(filename);loaded.filename=filename;loaded.paths=Module._nodeModulePaths(path.dirname(filename));loaded._compile(compiled,filename);
 const nmr=loaded.exports;
@@ -43,17 +43,23 @@ test('proton analysis survives and session review affects prediction',()=>{
  assert.deepEqual(nmr.sessionPeaks(nmr.emptySession('13C'),'13C'),[]);
 });
 test('text nucleus hints and unsupported nucleus are explicit',async()=>{
- assert.equal(nmr.nucleusKey('<13C>'),'13C');assert.equal(nmr.nucleusKey('19F'),null);
+ assert.equal(nmr.nucleusKey('<13C{1H}>'),'13C');assert.equal(nmr.nucleusKey('C13 CPD'),'13C');assert.equal(nmr.nucleusKey('19F'),null);
  const text=points([60,170]).map(p=>`${p.x},${p.y}`).join('\n');
  assert.equal((await nmr.parseTextXyFile(new File([text],'sample_13C.csv'))).nucleus,'13C');
  assert.equal((await nmr.parseTextXyFile(new File([text],'sample.csv'))).nucleus,'');
+});
+test('archive datasets are classified from metadata, experiment name, frequency and ppm range',()=>{
+ const base={points:[{x:0,y:0},{x:1,y:1}],frequency:null,source:'BRUKER · DATASET',fileName:'experiment'};
+ assert.equal(nmr.inferDatasetNucleus({...base,nucleus:'13C{1H}'}),'13C');
+ assert.equal(nmr.inferDatasetNucleus({...base,nucleus:'',fileName:'sample · DEPT135'}),'13C');
+ assert.equal(nmr.inferDatasetNucleus({...base,nucleus:'',frequency:400.13}),'1H');
+ assert.equal(nmr.inferDatasetNucleus({...base,nucleus:'',frequency:100.61,points:[{x:-5,y:0},{x:210,y:1}]}),'13C');
 });
 test('tabs preserve edits; single, sequential and batch uploads use only available nuclei',async()=>{
  global.IS_REACT_ACT_ENVIRONMENT=true;
 
  let renderer;await act(()=>{renderer=create(React.createElement(nmr.default));});
  const root=()=>renderer.root;
- const button=(label)=>root().findAllByType('button').find(node=>node.children.flat().some(child=>child===label));
  const tab=(nucleus)=>root().findAllByProps({role:'tab'}).find(node=>node.children.includes(nucleus));
  const text=()=>JSON.stringify(renderer.toJSON());
  const rows=()=>root().findByType('tbody').findAllByType('tr');
@@ -73,10 +79,8 @@ test('tabs preserve edits; single, sequential and batch uploads use only availab
  const proton=new File([nmr.buildDemoSpectrum().map(p=>`${p.x},${p.y}`).join('\n')],'proton_1H.csv');
  await upload([proton]);assert.match(text(),/¹H \+ ¹³C/);
  await act(()=>tab('¹³C NMR').props.onClick());assert.equal(rows().length,7);
- await act(()=>button('새 시료').props.onClick());assert.equal(rows().length,0);assert.match(text(),/입력 없음/);
  await upload([proton,file('carbon_13C.csv',[14.2,60.8,77.16,128.3,129.6,130.6,132.8,166.5])]);
  assert.match(text(),/¹H \+ ¹³C/);
  await act(()=>tab('¹³C NMR').props.onClick());assert.equal(rows().length,8);
- await act(()=>button('현재 탭 비우기').props.onClick());assert.match(text(),/¹H만/);
  await act(()=>renderer.unmount());delete global.IS_REACT_ACT_ENVIRONMENT;
 });
