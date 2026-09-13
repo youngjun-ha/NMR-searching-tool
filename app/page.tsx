@@ -162,6 +162,15 @@ const DEMO_SIGNALS = [
   { ppm: 1.39, amp: 0.69, integral: 3, split: [-0.023, 0, 0.023] },
 ];
 
+const DEMO_CARBON_SIGNALS = [
+  { ppm: 166.6, amp: 0.68 }, // ester C=O
+  { ppm: 130.6, amp: 0.52 }, // ipso aromatic carbon
+  { ppm: 129.6, amp: 0.62 }, // para aromatic carbon
+  { ppm: 128.3, amp: 0.88 }, // ortho/meta aromatic carbons
+  { ppm: 60.8, amp: 0.76 },  // O–CH2
+  { ppm: 14.4, amp: 0.72 },  // CH3
+];
+
 function lorentz(x: number, center: number, width: number, height: number) {
   const d = (x - center) / width;
   return height / (1 + d * d);
@@ -181,6 +190,20 @@ function buildDemoSpectrum(): SpectrumPoint[] {
       }
     }
     points.push({ x, y: Math.max(-0.006, y) });
+  }
+  return points;
+}
+
+function buildDemoCarbonSpectrum(): SpectrumPoint[] {
+  const points: SpectrumPoint[] = [];
+  const count = 7000;
+  const solventLines = [76.84, 77.16, 77.48];
+  for (let index = 0; index < count; index++) {
+    const x = 220 - (230 * index) / (count - 1);
+    let y = 0.0015 * Math.sin(index * 0.31) + 0.001 * Math.sin(index * 0.07);
+    for (const signal of DEMO_CARBON_SIGNALS) y += lorentz(x, signal.ppm, 0.038, signal.amp);
+    for (const center of solventLines) y += lorentz(x, center, 0.035, 0.92);
+    points.push({ x, y: Math.max(-0.004, y) });
   }
   return points;
 }
@@ -1830,10 +1853,11 @@ function carbonCandidates(): Candidate[] {
 
 function NmrApp() {
   const demoPoints = useMemo(() => buildDemoSpectrum(), []);
+  const demoCarbonPoints = useMemo(() => buildDemoCarbonSpectrum(), []);
   const [nucleus, setNucleus] = useState<Nucleus>("1H");
   const [sessions, setSessions] = useState<Record<Nucleus, SpectrumSession>>(() => ({
     "1H": { ...emptySession("1H"), points: demoPoints, fileName: "ethyl-benzoate_demo.dx", source: "DEMO · JCAMP-DX", frequency: 400.13, isDemo: true },
-    "13C": emptySession("13C"),
+    "13C": { ...emptySession("13C"), points: demoCarbonPoints, fileName: "ethyl-benzoate_13C_demo.dx", source: "DEMO · ¹³C", frequency: 100.61, isDemo: true },
   }));
   function spectrumSetter<K extends keyof SpectrumSession>(key: K) {
     return (value: SpectrumSession[K] | ((previous: SpectrumSession[K]) => SpectrumSession[K])) => setSessions((previous) => ({ ...previous, [nucleus]: { ...previous[nucleus], [key]: typeof value === "function" ? (value as (previous: SpectrumSession[K]) => SpectrumSession[K])(previous[nucleus][key]) : value } }));
@@ -2097,6 +2121,7 @@ function NmrApp() {
     setSessions((previous) => {
       const next = { ...previous };
       if (next["1H"].isDemo) next["1H"] = emptySession("1H");
+      if (next["13C"].isDemo) next["13C"] = emptySession("13C");
       for (const { target, match } of firstByNucleus) {
         if (!match) continue;
         const cleaned = sanitizeSpectrumPoints(match.dataset.points);

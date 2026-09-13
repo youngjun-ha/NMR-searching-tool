@@ -8,7 +8,7 @@ import ts from 'typescript';
 import React from 'react';
 import {create,act} from 'react-test-renderer';
 const filename=fileURLToPath(new URL('../app/page.tsx', import.meta.url));
-const source=fs.readFileSync(filename,'utf8')+'\nexport {analyzeCarbon, analyzeSpectrum, buildDemoSpectrum, sessionPeaks, emptySession, rankWithCarbon, carbonCandidates, nucleusKey, inferDatasetNucleus, suggestFormulas, parseTextXyFile};';
+const source=fs.readFileSync(filename,'utf8')+'\nexport {analyzeCarbon, analyzeSpectrum, buildDemoSpectrum, buildDemoCarbonSpectrum, sessionPeaks, emptySession, rankWithCarbon, carbonCandidates, nucleusKey, inferDatasetNucleus, suggestFormulas, parseTextXyFile};';
 const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2020}}).outputText;
 const loaded=new Module(filename);loaded.filename=filename;loaded.paths=Module._nodeModulePaths(path.dirname(filename));loaded._compile(compiled,filename);
 const nmr=loaded.exports;
@@ -23,6 +23,15 @@ test('carbon signals use carbon assignments and reject all chloroform lines',()=
 test('D2O has no carbon solvent; acetone rejects both carbon sites',()=>{
  assert.equal(nmr.analyzeCarbon(points([29.84,206.26]),'acetone').filter(p=>p.kind==='solvent').length,2);
  assert.equal(nmr.analyzeCarbon(points([29.84,206.26]),'d2o').filter(p=>p.kind==='solvent').length,0);
+});
+test('ethyl benzoate carbon demo has expected sample and CDCl3 signals',()=>{
+ const peaks=nmr.analyzeCarbon(nmr.buildDemoCarbonSpectrum(),'cdcl3');
+ const main=peaks.filter(p=>p.kind==='main');
+ assert.equal(main.length,6);
+ assert.equal(peaks.filter(p=>p.kind==='solvent').length,3);
+ for(const expected of [166.6,130.6,129.6,128.3,60.8,14.4]) {
+   assert.ok(main.some(p=>Math.abs(p.ppm-expected)<0.15),`${expected} ppm signal missing`);
+ }
 });
 test('carbon-only candidate ranking uses carbonyl evidence and ignores proton integration',()=>{
  const carbon=nmr.analyzeCarbon(points([14.2,60.8,128.3,129.6,130.6,132.8,166.5]),'cdcl3');
