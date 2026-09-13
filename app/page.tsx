@@ -2195,10 +2195,6 @@ function NmrApp() {
         </div>
       </header>
 
-      <div className="spectrum-data-actions">
-        <button disabled={status === "loading"} onClick={() => { setSessions((previous) => ({ ...previous, [nucleus]: emptySession(nucleus) })); setSelectedFormulaKey(""); setMessage(`${nucleus} 입력을 비웠습니다.`); }}>현재 탭 비우기</button>
-        <button disabled={status === "loading"} onClick={() => { setSessions({ "1H": emptySession("1H"), "13C": emptySession("13C") }); setDatasets([]); setObservedMz(""); setSelectedFormulaKey(""); setMessage("새 시료의 데이터를 업로드하세요."); }}>새 시료</button>
-      </div>
       <p className="helper-text">같은 시료의 ¹H·¹³C를 업로드하세요. 핵종 정보 없는 파일은 선택한 탭에 입력됩니다. 구조 예측: {evidenceLabel}</p>
       <section
         className={`upload-zone ${status}`}

@@ -521,7 +521,4 @@ footer .footer-email:hover { color: #66716d; text-decoration: underline; }
 .nucleus-toggle button.active { background: var(--lime); color: var(--ink); box-shadow: 0 1px 3px rgba(16,44,43,.12); }
 .nucleus-toggle button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .nucleus-toggle button:disabled { opacity: .5; cursor: wait; }
-.spectrum-data-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 10px; }
-.spectrum-data-actions button { border: 1px solid var(--line); background: var(--white); border-radius: 8px; padding: 8px 12px; color: var(--ink-2); cursor: pointer; }
-.spectrum-data-actions button:disabled { opacity: .5; cursor: wait; }
 .empty-spectrum { padding: 22px; text-align: center; color: #58766d; }
