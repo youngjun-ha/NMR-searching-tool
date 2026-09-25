@@ -13,6 +13,8 @@ import {
 
 type SpectrumPoint = { x: number; y: number };
 type PeakKind = "main" | "solvent" | "impurity";
+type CarbonExperiment = "13C" | "DEPT45" | "DEPT90" | "DEPT135" | "DEPT" | "APT" | "JMOD" | "DEPTQ";
+type CarbonType = "Cq" | "CH" | "CH2" | "CH3" | "CH/CH3" | "Cq/CH2" | "CH/CH2/CH3" | "unassigned";
 type MultiplicityCode =
   | "s"
   | "d"
@@ -44,6 +46,8 @@ type Peak = {
   confidence: number;
   assignment: string;
   reason: string;
+  polarity?: 1 | -1;
+  carbonType?: CarbonType;
   manual?: boolean;
   selectedRange?: [number, number];
 };
@@ -97,6 +101,7 @@ type ParsedSpectrum = {
   fileName: string;
   solvent?: string;
   note?: string;
+  experiment?: string;
 };
 type ParserInfo = Record<string, unknown>;
 type ParserEntry = {
@@ -1130,6 +1135,7 @@ async function parseFlatBruker(files: File[]): Promise<ParsedSpectrum | null> {
       source: "BRUKER · 1r + procs",
       fileName: "Bruker processed spectrum",
       solvent: brukerValue(acquisition, "SOLVENT"),
+      experiment: brukerValue(acquisition, "PULPROG") || brukerValue(acquisition, "EXP"),
       note: `${pointCount.toLocaleString()}개 포인트와 ${frequency.toFixed(2)} MHz를 처리 파일에서 자동으로 읽었습니다.`,
     };
   }
@@ -1163,6 +1169,7 @@ async function parseFlatBruker(files: File[]): Promise<ParsedSpectrum | null> {
       source: "BRUKER · fid + acqus",
       fileName: "Bruker raw FID preview",
       solvent: brukerValue(parameters, "SOLVENT"),
+      experiment: brukerValue(parameters, "PULPROG") || brukerValue(parameters, "EXP"),
       note: `원시 FID와 ${frequency.toFixed(2)} MHz를 자동으로 읽어 magnitude FT 미리보기를 만들었습니다. 정량 전 위상/베이스라인 검토가 필요합니다.`,
     };
   }
@@ -1327,6 +1334,10 @@ function firstValue(value: unknown) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function experimentFromInfo(info: ParserInfo) {
+  return String(firstValue(info.pulseSequence ?? info.pulseProgram ?? info.pulprog ?? info.experiment ?? info.experimentName ?? info.title) ?? "");
+}
+
 function normalizeParsed(entry: ParserEntry, fileName: string, source: string): ParsedSpectrum {
   const info = entry.info ?? entry.description ?? {};
   const components = entry.dependentVariables?.[0]?.components;
@@ -1348,6 +1359,7 @@ function normalizeParsed(entry: ParserEntry, fileName: string, source: string): 
       source,
       fileName,
       solvent: String(info.solvent ?? ""),
+      experiment: experimentFromInfo(info),
       note: isFid ? "원시 FID를 magnitude FT로 변환한 빠른 미리보기입니다. 정량 전 위상/베이스라인 검토가 필요합니다." : undefined,
     };
   }
@@ -1368,6 +1380,7 @@ function normalizeParsed(entry: ParserEntry, fileName: string, source: string): 
         source,
         fileName,
         solvent: String(info.solvent ?? ""),
+        experiment: experimentFromInfo(info),
         note: "JEOL FID를 magnitude FT로 변환한 빠른 미리보기입니다. 정량 전 위상/베이스라인 검토가 필요합니다.",
       };
     }
@@ -1382,6 +1395,7 @@ function normalizeParsed(entry: ParserEntry, fileName: string, source: string): 
       source,
       fileName,
       solvent: String(info.solvent ?? ""),
+      experiment: experimentFromInfo(info),
     };
   }
 
@@ -1429,6 +1443,7 @@ async function parseTextXyFile(file: File): Promise<ParsedSpectrum | null> {
     frequency: null,
     source: "OPEN · XY TEXT",
     fileName: file.name,
+    experiment: file.name,
     note: `개별 ${file.name.split(".").pop()?.toUpperCase() ?? "TEXT"} 파일에서 ${cleaned.length.toLocaleString()}개의 x/y 포인트를 직접 읽었습니다.`,
   };
 }
@@ -1571,12 +1586,13 @@ function SpectrumChart({
   const maxY = Math.max(1e-9, visibleMaxY);
   const width = 1000;
   const plotTop = 24;
-  const baselineY = 275;
-  const plotHeight = baselineY - plotTop;
-  const displayedBaselineY = baselineY;
+  const plotBottom = 280;
+  const baselineY = plotBottom;
+  const plotHeight = plotBottom - plotTop;
+  const displayedBaselineY = plotBottom - ((0 - minY) / Math.max(maxY - minY, 1e-9)) * plotHeight;
   const xAt = (ppm: number) => 54 + ((high - ppm) / Math.max(high - low, 1e-9)) * 916;
-  const yAt = (value: number) => displayedBaselineY - ((value - minY) / Math.max(maxY - minY, 1e-9)) * plotHeight * verticalScale;
-  const clippedYAt = (value: number) => Math.max(plotTop, Math.min(baselineY, yAt(value)));
+  const yAt = (value: number) => displayedBaselineY - (value / Math.max(maxY - minY, 1e-9)) * plotHeight * verticalScale;
+  const clippedYAt = (value: number) => Math.max(plotTop, Math.min(plotBottom, yAt(value)));
   const path = visible
     .filter((_, index) => index % Math.max(1, Math.floor(visible.length / 2600)) === 0)
     .map((point, index) => `${index ? "L" : "M"}${xAt(point.x).toFixed(2)},${yAt(point.y).toFixed(2)}`)
@@ -1700,13 +1716,14 @@ function SpectrumChart({
             />
           )}
         </g>
-        {peaks.filter((peak) => peak.ppm >= low && peak.ppm <= high).map((peak) => (
-          <g key={peak.id} opacity={Math.max(0, Math.min(1, (verticalScale - 0.01) / 0.16))}>
-            <line x1={xAt(peak.ppm)} y1={clippedYAt(peak.intensity)} x2={xAt(peak.ppm)} y2="55" className={`peak-pin ${peak.kind}`} />
-            <circle cx={xAt(peak.ppm)} cy="50" r="5" className={`peak-dot ${peak.kind}`} />
-            <text x={xAt(peak.ppm)} y="38" textAnchor="middle" className={`peak-label ${peak.kind}`}>{peak.multiplicity}</text>
-          </g>
-        ))}
+        {peaks.filter((peak) => peak.ppm >= low && peak.ppm <= high).map((peak) => {
+          const markerY = peak.polarity === -1 ? Math.min(plotBottom - 10, displayedBaselineY + 24) : 50;
+          return <g key={peak.id} opacity={Math.max(0, Math.min(1, (verticalScale - 0.01) / 0.16))}>
+            <line x1={xAt(peak.ppm)} y1={clippedYAt(peak.intensity)} x2={xAt(peak.ppm)} y2={markerY + (peak.polarity === -1 ? -5 : 5)} className={`peak-pin ${peak.kind} ${peak.polarity === -1 ? "negative" : "positive"}`} />
+            <circle cx={xAt(peak.ppm)} cy={markerY} r="5" className={`peak-dot ${peak.kind} ${peak.polarity === -1 ? "negative" : "positive"}`} />
+            <text x={xAt(peak.ppm)} y={markerY + (peak.polarity === -1 ? 16 : -12)} textAnchor="middle" className={`peak-label ${peak.kind}`}>{peak.carbonType ? carbonTypeShortLabel(peak.carbonType) : peak.multiplicity}</text>
+          </g>;
+        })}
         {cursor && (
           <line x1={xAt(cursor.ppm)} x2={xAt(cursor.ppm)} y1="22" y2={baselineY} className="cursor-line" />
         )}
@@ -1772,6 +1789,24 @@ function inferDatasetNucleus(dataset: ParsedSpectrum): Nucleus | null {
   if (dataset.frequency && dataset.frequency > 0 && dataset.frequency < 220 && high > 12) return "13C";
   return null;
 }
+function inferCarbonExperiment(dataset: ParsedSpectrum): CarbonExperiment {
+  const label = `${dataset.experiment ?? ""} ${dataset.fileName} ${dataset.source} ${dataset.note ?? ""}`.toLowerCase();
+  if (/dept\s*[-_]?\s*q|deptq/.test(label)) return "DEPTQ";
+  if (/dept\s*[-_]?\s*135|dept135/.test(label)) return "DEPT135";
+  if (/dept\s*[-_]?\s*90|dept90/.test(label)) return "DEPT90";
+  if (/dept\s*[-_]?\s*45|dept45/.test(label)) return "DEPT45";
+  if (/(?:^|[^a-z])apt(?:[^a-z]|$)/.test(label)) return "APT";
+  if (/(?:^|[^a-z])jmod(?:[^a-z]|$)/.test(label)) return "JMOD";
+  if (/(?:^|[^a-z])dept(?:[^a-z]|$)/.test(label)) return "DEPT";
+  return "13C";
+}
+function carbonExperimentLabel(value: CarbonExperiment) {
+  return ({ "13C": "일반 ¹³C", DEPT45: "DEPT-45", DEPT90: "DEPT-90", DEPT135: "DEPT-135",
+    DEPT: "DEPT", APT: "APT", JMOD: "JMOD", DEPTQ: "DEPT-Q" } as Record<CarbonExperiment, string>)[value];
+}
+function isPhaseSensitiveCarbon(value: CarbonExperiment) {
+  return value === "DEPT135" || value === "APT" || value === "JMOD" || value === "DEPTQ" || value === "DEPT";
+}
 // Carbon solvent centers; D2O contains no carbon. Acetone has two carbon sites.
 const CARBON_SOLVENTS = SOLVENTS.map((item) => ({ ...item, ppm: ({ cdcl3: 77.16, dmso: 39.52, cd3od: 49.0, d2o: NaN, acetone: 29.84, c6d6: 128.06 } as Record<string, number>)[item.id] }));
 function carbonAssignment(ppm: number) {
@@ -1781,32 +1816,94 @@ function carbonAssignment(ppm: number) {
   if (ppm >= 50) return "O/N 인접 또는 sp 탄소 영역";
   return "지방족 탄소 영역";
 }
-function analyzeCarbon(points: SpectrumPoint[], solventId: string): Peak[] {
-  // Reuse noise rejection and area calculation, never proton assignments or integrals.
+function carbonTypeForExperiment(experiment: CarbonExperiment, polarity: 1 | -1): CarbonType {
+  if (experiment === "DEPT45") return polarity === 1 ? "CH/CH2/CH3" : "unassigned";
+  if (experiment === "DEPT90") return polarity === 1 ? "CH" : "unassigned";
+  if (experiment === "DEPT135") return polarity === 1 ? "CH/CH3" : "CH2";
+  if (experiment === "APT" || experiment === "JMOD") return polarity === 1 ? "CH/CH3" : "Cq/CH2";
+  return "unassigned";
+}
+function carbonTypeLabel(type: CarbonType) {
+  return ({ Cq: "Cq (4차 탄소)", CH: "CH", CH2: "CH₂", CH3: "CH₃", "CH/CH3": "CH 또는 CH₃",
+    "Cq/CH2": "Cq 또는 CH₂", "CH/CH2/CH3": "CH·CH₂·CH₃", unassigned: "탄소 유형 미분류" } as Record<CarbonType, string>)[type];
+}
+function carbonTypeShortLabel(type?: CarbonType) {
+  return type === "CH2" ? "CH₂" : type === "CH3" ? "CH₃" : type === "CH/CH3" ? "CH/CH₃"
+    : type === "Cq/CH2" ? "Cq/CH₂" : type === "CH/CH2/CH3" ? "CH/CH₂/CH₃" : type === "unassigned" || !type ? "C" : type;
+}
+function analyzeCarbon(points: SpectrumPoint[], solventId: string, experiment: CarbonExperiment = "13C"): Peak[] {
+  // Phase-sensitive carbon experiments need both maxima and minima. The polarity
+  // convention is intentionally explicit because processed vendor data can be inverted.
   const solvent = CARBON_SOLVENTS.find((item) => item.id === solventId)!;
   const centers = solventId === "acetone" ? [solvent.ppm, 206.26] : [solvent.ppm];
-  return analyzeSpectrum(points, "carbon-unassigned", true).map((peak) => {
+  const positive = analyzeSpectrum(points, "carbon-unassigned", true).map((peak) => ({ ...peak, polarity: 1 as const }));
+  const negative = isPhaseSensitiveCarbon(experiment)
+    ? analyzeSpectrum(points.map((point) => ({ ...point, y: -point.y })), "carbon-unassigned", true)
+      .map((peak) => ({ ...peak, polarity: -1 as const, intensity: -peak.intensity }))
+    : [];
+  const merged: Array<Peak & { polarity: 1 | -1 }> = [];
+  for (const peak of [...positive, ...negative].sort((a, b) => Math.abs(b.intensity) - Math.abs(a.intensity))) {
+    if (!merged.some((other) => Math.abs(other.ppm - peak.ppm) < 0.085)) merged.push(peak);
+  }
+  return merged.sort((a, b) => b.ppm - a.ppm).map((peak, id) => {
     const isSolvent = centers.some((center) => Math.abs(peak.ppm - center) < 0.85);
-    return { ...peak, integral: 0, multiplicity: "s", multiplicityName: "탄소 신호", lineCount: 1,
-      kind: isSolvent ? "solvent" : "main", assignment: isSolvent ? `${solvent.name} 탄소 용매 영역` : carbonAssignment(peak.ppm),
-      reason: isSolvent ? "중수소 결합으로 갈라진 용매선 포함 · 구조 예측에서 제외" : "¹³C ppm 기반 영역 추정 · 면적은 탄소 수로 사용하지 않음" };
+    const carbonType = carbonTypeForExperiment(experiment, peak.polarity);
+    const typeText = carbonTypeLabel(carbonType);
+    return { ...peak, id, integral: 0, multiplicity: "s", multiplicityName: "탄소 신호", lineCount: 1, carbonType,
+      kind: isSolvent ? "solvent" : "main", assignment: isSolvent ? `${solvent.name} 탄소 용매 영역` : `${typeText} · ${carbonAssignment(peak.ppm)}`,
+      reason: isSolvent ? "중수소 결합으로 갈라진 용매선 포함 · 구조 예측에서 제외"
+        : experiment === "13C" ? "일반 ¹³C ppm 기반 영역 추정 · DEPT/APT가 함께 있으면 탄소 유형을 교차 배정"
+          : `${carbonExperimentLabel(experiment)} ${peak.polarity === 1 ? "양(+)" : "음(−)"} 위상 기준 · 필요하면 위상 반전을 확인` };
+  });
+}
+type CarbonExperimentEvidence = { experiment: CarbonExperiment; peaks: Peak[] };
+function refineCarbonAssignments(peaks: Peak[], activeExperiment: CarbonExperiment, evidence: CarbonExperimentEvidence[]): Peak[] {
+  if (activeExperiment !== "13C") return peaks;
+  const informative = evidence.filter((item) => item.experiment !== "13C");
+  if (!informative.length) return peaks;
+  const hasExperiment = (experiment: CarbonExperiment) => informative.some((item) => item.experiment === experiment);
+  const match = (peak: Peak, experiment: CarbonExperiment) => informative
+    .filter((item) => item.experiment === experiment)
+    .flatMap((item) => item.peaks)
+    .find((candidate) => candidate.kind === "main" && Math.abs(candidate.ppm - peak.ppm) <= 0.28);
+  return peaks.map((peak) => {
+    if (peak.kind !== "main") return peak;
+    const dept90 = match(peak, "DEPT90");
+    const dept135 = match(peak, "DEPT135");
+    const dept45 = match(peak, "DEPT45");
+    const apt = match(peak, "APT") ?? match(peak, "JMOD");
+    let carbonType: CarbonType = "unassigned";
+    let evidenceText = "";
+    if (dept90?.polarity === 1) { carbonType = "CH"; evidenceText = "DEPT-90에서 관찰"; }
+    else if (dept135?.polarity === -1) { carbonType = "CH2"; evidenceText = "DEPT-135 음(−) 위상"; }
+    else if (dept135?.polarity === 1 && hasExperiment("DEPT90")) { carbonType = "CH3"; evidenceText = "DEPT-135 양(+)·DEPT-90 미관찰"; }
+    else if (dept135?.polarity === 1) { carbonType = "CH/CH3"; evidenceText = "DEPT-135 양(+) 위상"; }
+    else if (apt) { carbonType = apt.polarity === 1 ? "CH/CH3" : "Cq/CH2"; evidenceText = `${carbonExperimentLabel(hasExperiment("APT") ? "APT" : "JMOD")} 위상 비교`; }
+    else if (dept45?.polarity === 1) { carbonType = "CH/CH2/CH3"; evidenceText = "DEPT-45에서 관찰"; }
+    else if (hasExperiment("DEPT135") || hasExperiment("DEPT45")) { carbonType = "Cq"; evidenceText = "일반 ¹³C에는 있으나 DEPT에서 미관찰"; }
+    if (carbonType === "unassigned") return peak;
+    return { ...peak, carbonType, assignment: `${carbonTypeLabel(carbonType)} · ${carbonAssignment(peak.ppm)}`,
+      reason: `${evidenceText} · 0.28 ppm 허용 범위로 같은 시료의 탄소 실험을 교차 비교` };
   });
 }
 type SpectrumSession = {
   points: SpectrumPoint[]; fileName: string; source: string; frequency: number | null;
+  carbonExperiment: CarbonExperiment; phaseInverted: boolean;
   solventId: string; offset: number; isDemo: boolean; referencePeakId: number | null;
   referenceIntegral: string; excludedPeakIds: number[]; multiplicityOverrides: Record<number, MultiplicityCode>;
   verticalScale: number; chartMode: ChartMode; manualPeaks: Peak[]; range: [number, number]; activeDataset: number;
 };
 function emptySession(nucleus: Nucleus): SpectrumSession {
   return { points: [], fileName: `${nucleusLabel(nucleus)} 데이터를 업로드하세요`, source: "미입력", frequency: null,
+    carbonExperiment: "13C", phaseInverted: false,
     solventId: "cdcl3", offset: 0, isDemo: false, referencePeakId: null, referenceIntegral: "1",
     excludedPeakIds: [], multiplicityOverrides: {}, verticalScale: 1, chartMode: "navigate", manualPeaks: [],
     range: nucleus === "13C" ? [-10, 220] : [-0.4, 10.2], activeDataset: -1 };
 }
 function sessionPeaks(session: SpectrumSession, nucleus: Nucleus): Peak[] {
-  const shifted = session.points.map((point) => ({ ...point, x: point.x + session.offset }));
-  let detected = nucleus === "13C" ? analyzeCarbon(shifted, session.solventId) : analyzeSpectrum(shifted, session.solventId);
+  const shifted = session.points.map((point) => ({ ...point, x: point.x + session.offset,
+    y: nucleus === "13C" && session.phaseInverted ? -point.y : point.y }));
+  let detected = nucleus === "13C" ? analyzeCarbon(shifted, session.solventId, session.carbonExperiment) : analyzeSpectrum(shifted, session.solventId);
   if (session.isDemo) detected = detected.map((peak) => {
     const expected = DEMO_SIGNALS.find((signal) => signal.integral > 0 && Math.abs(signal.ppm + session.offset - peak.ppm) < 0.08);
     return expected && peak.kind === "main" ? { ...peak, integral: expected.integral, area: expected.integral } : peak;
@@ -1858,7 +1955,7 @@ function NmrApp() {
   const [nucleus, setNucleus] = useState<Nucleus>("1H");
   const [sessions, setSessions] = useState<Record<Nucleus, SpectrumSession>>(() => ({
     "1H": { ...emptySession("1H"), points: demoPoints, fileName: "ethyl-benzoate_demo.dx", source: "DEMO · JCAMP-DX", frequency: 400.13, isDemo: true },
-    "13C": { ...emptySession("13C"), points: demoCarbonPoints, fileName: "ethyl-benzoate_¹³C_demo.dx", source: "DEMO · ¹³C", frequency: 100.61, isDemo: true },
+    "13C": { ...emptySession("13C"), points: demoCarbonPoints, fileName: "ethyl-benzoate_¹³C_demo.dx", source: "DEMO · ¹³C", frequency: 100.61, isDemo: true, carbonExperiment: "13C" },
   }));
   function spectrumSetter<K extends keyof SpectrumSession>(key: K) {
     return (value: SpectrumSession[K] | ((previous: SpectrumSession[K]) => SpectrumSession[K])) => setSessions((previous) => ({ ...previous, [nucleus]: { ...previous[nucleus], [key]: typeof value === "function" ? (value as (previous: SpectrumSession[K]) => SpectrumSession[K])(previous[nucleus][key]) : value } }));
@@ -1869,6 +1966,9 @@ function NmrApp() {
   const fileName = sessions[nucleus].fileName;
   const source = sessions[nucleus].source;
   const frequency = sessions[nucleus].frequency;
+  const carbonExperiment = sessions[nucleus].carbonExperiment;
+  const phaseInverted = sessions[nucleus].phaseInverted;
+  const setPhaseInverted = spectrumSetter("phaseInverted");
   const [datasets, setDatasets] = useState<ParsedSpectrum[]>([]);
   const activeDataset = sessions[nucleus].activeDataset;
   const solventId = sessions[nucleus].solventId;
@@ -1905,16 +2005,27 @@ function NmrApp() {
   const range = sessions[nucleus].range;
   const setRange = spectrumSetter("range");
   const solvent = availableSolvents.find((item) => item.id === solventId) ?? availableSolvents[0];
-  const shiftedPoints = useMemo(() => points.map((point) => ({ ...point, x: point.x + offset })), [points, offset]);
+  const shiftedPoints = useMemo(() => points.map((point) => ({ ...point, x: point.x + offset,
+    y: isCarbon && phaseInverted ? -point.y : point.y })), [points, offset, isCarbon, phaseInverted]);
+  const carbonEvidence = useMemo<CarbonExperimentEvidence[]>(() => datasets
+    .filter((dataset) => nucleusKey(dataset.nucleus) === "13C")
+    .map((dataset) => {
+      const experiment = inferCarbonExperiment(dataset);
+      return { experiment, peaks: analyzeCarbon(sanitizeSpectrumPoints(dataset.points), solventId, experiment) };
+    }), [datasets, solventId]);
+  const carbonDatasetOptions = useMemo(() => datasets
+    .map((dataset, index) => ({ dataset, index, experiment: inferCarbonExperiment(dataset) }))
+    .filter(({ dataset }) => nucleusKey(dataset.nucleus) === "13C"), [datasets]);
   const detectedPeaks = useMemo(() => {
-    const detected = isCarbon ? analyzeCarbon(shiftedPoints, solventId) : analyzeSpectrum(shiftedPoints, solventId);
+    const rawDetected = isCarbon ? analyzeCarbon(shiftedPoints, solventId, carbonExperiment) : analyzeSpectrum(shiftedPoints, solventId);
+    const detected = isCarbon ? refineCarbonAssignments(rawDetected, carbonExperiment, carbonEvidence) : rawDetected;
     if (!isDemo) return detected;
     return detected.map((peak) => {
       if (peak.kind !== "main") return peak;
       const expected = DEMO_SIGNALS.find((signal) => signal.integral > 0 && Math.abs(signal.ppm + offset - peak.ppm) < 0.08);
       return expected ? { ...peak, integral: expected.integral, area: expected.integral } : peak;
     });
-  }, [shiftedPoints, solventId, isDemo, offset, isCarbon]);
+  }, [shiftedPoints, solventId, isDemo, offset, isCarbon, carbonExperiment, carbonEvidence]);
   const combinedPeaks = useMemo(
     () => [...detectedPeaks, ...manualPeaks].sort((a, b) => b.ppm - a.ppm),
     [detectedPeaks, manualPeaks],
@@ -1954,7 +2065,12 @@ function NmrApp() {
   const visibleSpan = Math.min(Math.abs(range[1] - range[0]), fullSpan);
   const isZoomed = visibleSpan < fullSpan * 0.995;
   const protonPeaks = useMemo(() => sessionPeaks(sessions["1H"], "1H"), [sessions]);
-  const carbonPeaks = useMemo(() => sessionPeaks(sessions["13C"], "13C"), [sessions]);
+  const carbonPeaks = useMemo(() => {
+    const active = sessionPeaks(sessions["13C"], "13C");
+    if (sessions["13C"].carbonExperiment === "13C") return refineCarbonAssignments(active, "13C", carbonEvidence);
+    const general = carbonEvidence.find((item) => item.experiment === "13C");
+    return general ? refineCarbonAssignments(general.peaks, "13C", carbonEvidence) : active;
+  }, [sessions, carbonEvidence]);
   const hasProton = protonPeaks.some((peak) => peak.kind === "main");
   const hasCarbon = carbonPeaks.some((peak) => peak.kind === "main");
   const evidenceLabel = hasProton && hasCarbon ? "¹H + ¹³C" : hasCarbon ? "¹³C만" : hasProton ? "¹H만" : "입력 없음";
@@ -2078,7 +2194,9 @@ function NmrApp() {
   function applySolventCorrection(nextId = solventId) {
     const target = availableSolvents.find((item) => item.id === nextId) ?? availableSolvents[0];
     if (!Number.isFinite(target.ppm)) { setMessage("D₂O에는 탄소 기준 신호가 없습니다."); return; }
-    const provisional = isCarbon ? analyzeCarbon(points, nextId) : analyzeSpectrum(points, nextId);
+    const provisional = isCarbon
+      ? analyzeCarbon(points.map((point) => ({ ...point, y: phaseInverted ? -point.y : point.y })), nextId, carbonExperiment)
+      : analyzeSpectrum(points, nextId);
     const solventPeak = provisional
       .filter((peak) => peak.kind === "solvent")
       .sort((a, b) => b.intensity - a.intensity)[0];
@@ -2099,6 +2217,7 @@ function NmrApp() {
     if (cleaned.length < 16) throw new Error("표시할 유효 데이터 포인트가 부족합니다.");
     setSessions((previous) => ({ ...previous, [target]: { ...emptySession(target), points: cleaned, fileName: dataset.fileName,
       source: dataset.source, frequency: dataset.frequency, solventId: solventFromMetadata(dataset.solvent) ?? previous[target].solventId,
+      carbonExperiment: target === "13C" ? inferCarbonExperiment(dataset) : "13C",
       range: finiteExtent(cleaned.map((point) => point.x)), activeDataset: index } }));
     setNucleus(target);
     setStatus("ready");
@@ -2132,6 +2251,7 @@ function NmrApp() {
           fileName: match.dataset.fileName,
           source: match.dataset.source,
           frequency: match.dataset.frequency,
+          carbonExperiment: target === "13C" ? inferCarbonExperiment(match.dataset) : "13C",
           solventId: solventFromMetadata(match.dataset.solvent) ?? previous[target].solventId,
           range: finiteExtent(cleaned.map((point) => point.x), target === "13C" ? [-10, 220] : [-0.4, 10.2]),
           activeDataset: match.index,
@@ -2238,7 +2358,9 @@ function NmrApp() {
   }
 
   function exportCsv() {
-    const lines = [`nucleus,ppm,multiplicity,${isCarbon ? "relative_area" : "scaled_integral"},amount_label,classification,confidence,assignment`, ...peaks.map((peak) => [nucleus, peak.ppm.toFixed(4), peak.multiplicity, hasValidReferenceIntegral ? normalizedIntegral(peak).toFixed(3) : "", amountLabel(peak), peak.kind, peak.confidence, `\"${peak.assignment}\"`].join(","))];
+    const lines = isCarbon
+      ? ["nucleus,experiment,ppm,polarity,carbon_type,relative_area,classification,confidence,assignment", ...peaks.map((peak) => ["13C", carbonExperiment, peak.ppm.toFixed(4), peak.polarity === -1 ? "negative" : "positive", peak.carbonType ?? "unassigned", normalizedIntegral(peak).toFixed(3), peak.kind, peak.confidence, `\"${peak.assignment}\"`].join(","))]
+      : ["nucleus,ppm,multiplicity,scaled_integral,amount_label,classification,confidence,assignment", ...peaks.map((peak) => [nucleus, peak.ppm.toFixed(4), peak.multiplicity, hasValidReferenceIntegral ? normalizedIntegral(peak).toFixed(3) : "", amountLabel(peak), peak.kind, peak.confidence, `\"${peak.assignment}\"`].join(","))];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -2306,7 +2428,29 @@ function NmrApp() {
               <div className="nucleus-toggle" role="tablist" aria-label="NMR 핵종 선택">
                 {(["1H", "13C"] as const).map((value) => <button key={value} role="tab" aria-selected={nucleus === value} disabled={status === "loading"} className={nucleus === value ? "active" : ""} onClick={() => setNucleus(value)}>{value === "1H" ? "¹H NMR" : "¹³C NMR"}</button>)}
               </div>
-              {datasets.filter((dataset) => nucleusKey(dataset.nucleus) === nucleus).length > 1 ? (
+              {isCarbon ? (
+                <>
+                  <div className="carbon-experiment-strip" role="group" aria-label="¹³C 실험 종류 선택">
+                    {(carbonDatasetOptions.length ? carbonDatasetOptions : [{ dataset: null, index: -1, experiment: carbonExperiment }]).map(({ dataset, index, experiment }, optionIndex) => (
+                      <button
+                        type="button"
+                        key={`${index}-${experiment}-${optionIndex}`}
+                        className={activeDataset === index || (!dataset && isDemo) ? "active" : ""}
+                        title={dataset?.fileName ?? "현재 예제 스펙트럼"}
+                        onClick={() => dataset && showDataset(dataset, index, datasets.length)}
+                      >
+                        {carbonExperimentLabel(experiment)}
+                      </button>
+                    ))}
+                    {isPhaseSensitiveCarbon(carbonExperiment) && (
+                      <button type="button" className={`phase-toggle ${phaseInverted ? "active" : ""}`} onClick={() => setPhaseInverted((value) => !value)}>
+                        위상 {phaseInverted ? "반전됨" : "기본"} ↕
+                      </button>
+                    )}
+                  </div>
+                  <h2>{fileName}</h2>
+                </>
+              ) : datasets.filter((dataset) => nucleusKey(dataset.nucleus) === nucleus).length > 1 ? (
                 <div className="dataset-picker">
                   <label htmlFor="dataset">스펙트럼 선택</label>
                   <select
@@ -2323,7 +2467,7 @@ function NmrApp() {
               ) : <h2>{fileName}</h2>}
             </div>
             <div className="dataset-meta">
-              <span>{source}</span><span>{nucleusLabel(nucleus)}</span>
+              <span>{source}</span><span>{isCarbon ? carbonExperimentLabel(carbonExperiment) : nucleusLabel(nucleus)}</span>
               {frequency ? <span title="파일 메타데이터에서 자동 판독">AUTO · {frequency.toFixed(2)} MHz</span> : <span>MHz 정보 없음</span>}
             </div>
           </div>
@@ -2396,7 +2540,7 @@ function NmrApp() {
             <div>
               <p className="panel-kicker">AI-ASSISTED TRIAGE</p>
               <h2>피크 분류 & 적분</h2>
-              <p>{mainPeaks.length}개 메인 신호{manualPeaks.length ? ` · ${manualPeaks.length}개 직접 추가` : ""} · {peaks.filter((peak) => peak.kind === "solvent").length}개 용매 · {peaks.filter((peak) => peak.kind === "impurity").length}개 잔류 수분 후보{excludedPeaks.length ? ` · ${excludedPeaks.length}개 수동 제외` : ""}</p>
+              <p>{mainPeaks.length}개 메인 신호{isCarbon && isPhaseSensitiveCarbon(carbonExperiment) ? ` · 양(+) ${mainPeaks.filter((peak) => peak.polarity !== -1).length}개 · 음(−) ${mainPeaks.filter((peak) => peak.polarity === -1).length}개` : ""}{manualPeaks.length ? ` · ${manualPeaks.length}개 직접 추가` : ""} · {peaks.filter((peak) => peak.kind === "solvent").length}개 용매 · {peaks.filter((peak) => peak.kind === "impurity").length}개 잔류 수분 후보{excludedPeaks.length ? ` · ${excludedPeaks.length}개 수동 제외` : ""}</p>
             </div>
             <div className="filter-tabs" role="group" aria-label="피크 필터">
               {(["all", "main", "solvent", "impurity"] as const).map((kind) => (
@@ -2406,8 +2550,8 @@ function NmrApp() {
               ))}
             </div>
           </div>
-          {isCarbon && <p className="helper-text">¹³C 분석은 ppm과 신호 수를 사용합니다. 상대 면적·다중도는 확인용이며 탄소 수나 수소 수로 환산하지 않습니다.</p>}
-          <div className="integration-reference">
+          {isCarbon && <div className="carbon-analysis-note"><b>{carbonExperimentLabel(carbonExperiment)}</b><span>{carbonExperiment === "13C" ? "같이 업로드된 DEPT/APT 신호와 ppm을 교차 비교해 Cq·CH·CH₂·CH₃를 배정합니다." : "양·음 위상과 실험 규칙으로 탄소 유형을 배정합니다. 방향이 반대면 그래프 위의 위상 반전을 누르세요."}</span></div>}
+          {!isCarbon && <div className="integration-reference">
             <div className="reference-copy">
               <span className="reference-icon">∫</span>
               <div><b>사용자 적분 기준</b><small>선택한 메인 피크에 직접 입력한 값을 적용해 전체 적분을 다시 계산합니다.</small></div>
@@ -2437,10 +2581,10 @@ function NmrApp() {
                 {hasValidReferenceIntegral ? "전체를 지운 뒤 새 값을 입력할 수 있습니다." : "0보다 큰 적분값을 입력하세요."}
               </small>
             </label>
-          </div>
+          </div>}
           <div className="table-wrap">
             <table>
-              <thead><tr><th>분류</th><th>δ / ppm</th><th>다중도</th><th>{isCarbon ? "상대 면적" : "보정 적분"}</th><th>예상 배정</th><th>신뢰도</th><th>사용자 조정</th></tr></thead>
+              <thead><tr><th>분류</th><th>δ / ppm</th><th>{isCarbon ? "탄소 유형" : "다중도"}</th><th>{isCarbon ? "상대 세기" : "보정 적분"}</th><th>예상 배정</th><th>신뢰도</th><th>사용자 조정</th></tr></thead>
               <tbody>
                 {shownPeaks.map((peak) => {
                   const ratio = normalizedIntegral(peak);
@@ -2448,7 +2592,7 @@ function NmrApp() {
                     <td><span className={`kind-badge ${peak.kind} ${peak.manual ? "manual" : ""}`}>{peak.manual ? "MANUAL" : peak.kind === "main" ? "MAIN" : peak.kind === "solvent" ? "SOLVENT" : "WATER"}</span></td>
                     <td><b className="mono">{peak.ppm.toFixed(3)}</b>{peak.selectedRange && <small>{peak.selectedRange[1].toFixed(3)}–{peak.selectedRange[0].toFixed(3)}</small>}</td>
                     <td>
-                      <div className="select-wrap multiplicity-select-wrap">
+                      {isCarbon ? <div className={`carbon-type-badge ${peak.polarity === -1 ? "negative" : "positive"}`}><b>{carbonTypeShortLabel(peak.carbonType)}</b><small>{peak.polarity === -1 ? "음(−) 위상" : "양(+) 위상"}</small></div> : <><div className="select-wrap multiplicity-select-wrap">
                         <select
                           value={peak.multiplicity}
                           onChange={(event) => updateMultiplicity(peak.id, event.target.value as MultiplicityCode)}
@@ -2467,6 +2611,7 @@ function NmrApp() {
                         </select>
                       </div>
                       <small>{multiplicityOverrides[peak.id] ? "사용자 선택 · 확정" : peak.manual ? `구간 판정 · ${peak.lineCount}개 선 · 눌러서 변경` : `AI 판정 · ${peak.lineCount}개 선 · 눌러서 변경`}</small>
+                      </>}
                     </td>
                     <td>
                       <span className={`integral ${peak.kind}`}><i style={{ width: `${hasValidReferenceIntegral ? Math.min(100, (ratio / Math.max(referenceIntegralValue, 1)) * 28) : 0}%` }} />{formatIntegral(ratio)}</span>

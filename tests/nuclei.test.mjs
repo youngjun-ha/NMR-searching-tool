@@ -8,11 +8,12 @@ import ts from 'typescript';
 import React from 'react';
 import {create,act} from 'react-test-renderer';
 const filename=fileURLToPath(new URL('../app/page.tsx', import.meta.url));
-const source=fs.readFileSync(filename,'utf8')+'\nexport {analyzeCarbon, analyzeSpectrum, buildDemoSpectrum, buildDemoCarbonSpectrum, sessionPeaks, emptySession, rankWithCarbon, carbonCandidates, nucleusKey, inferDatasetNucleus, suggestFormulas, parseTextXyFile};';
+const source=fs.readFileSync(filename,'utf8')+'\nexport {analyzeCarbon, analyzeSpectrum, buildDemoSpectrum, buildDemoCarbonSpectrum, sessionPeaks, emptySession, rankWithCarbon, carbonCandidates, nucleusKey, inferDatasetNucleus, inferCarbonExperiment, refineCarbonAssignments, suggestFormulas, parseTextXyFile};';
 const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2020}}).outputText;
 const loaded=new Module(filename);loaded.filename=filename;loaded.paths=Module._nodeModulePaths(path.dirname(filename));loaded._compile(compiled,filename);
 const nmr=loaded.exports;
 function points(centers){return Array.from({length:12000},(_,i)=>{const x=220-225*i/11999;return {x,y:centers.reduce((sum,c)=>sum+1/(1+((x-c)/.04)**2),0)}})}
+function signedPoints(signals){return Array.from({length:12000},(_,i)=>{const x=220-225*i/11999;return {x,y:signals.reduce((sum,s)=>sum+s.sign/(1+((x-s.ppm)/.04)**2),0)}})}
 test('carbon signals use carbon assignments and reject all chloroform lines',()=>{
  const peaks=nmr.analyzeCarbon(points([14.2,60.8,76.84,77.16,77.48,128.3,129.6,130.6,132.8,166.5]),'cdcl3');
  assert.equal(peaks.filter(p=>p.kind==='main').length,7);
@@ -63,6 +64,27 @@ test('archive datasets are classified from metadata, experiment name, frequency 
  assert.equal(nmr.inferDatasetNucleus({...base,nucleus:'',fileName:'sample · DEPT135'}),'13C');
  assert.equal(nmr.inferDatasetNucleus({...base,nucleus:'',frequency:400.13}),'1H');
  assert.equal(nmr.inferDatasetNucleus({...base,nucleus:'',frequency:100.61,points:[{x:-5,y:0},{x:210,y:1}]}),'13C');
+});
+test('carbon experiment names and DEPT-135 signed peaks are distinguished',()=>{
+ const base={points:points([20]),nucleus:'13C',frequency:100.6,source:'BRUKER',fileName:'sample'};
+ assert.equal(nmr.inferCarbonExperiment({...base,experiment:'dept135'}),'DEPT135');
+ assert.equal(nmr.inferCarbonExperiment({...base,fileName:'sample_DEPT_90.csv'}),'DEPT90');
+ assert.equal(nmr.inferCarbonExperiment({...base,experiment:'apt'}),'APT');
+ const spectrum=signedPoints([{ppm:20,sign:1},{ppm:60,sign:1},{ppm:45,sign:-1}]);
+ const peaks=nmr.analyzeCarbon(spectrum,'d2o','DEPT135').filter(p=>p.kind==='main');
+ assert.equal(peaks.find(p=>Math.abs(p.ppm-45)<.1).polarity,-1);
+ assert.equal(peaks.find(p=>Math.abs(p.ppm-45)<.1).carbonType,'CH2');
+ assert.equal(peaks.find(p=>Math.abs(p.ppm-20)<.1).carbonType,'CH/CH3');
+ const inverted=nmr.analyzeCarbon(spectrum.map(p=>({...p,y:-p.y})),'d2o','DEPT135').filter(p=>p.kind==='main');
+ assert.equal(inverted.find(p=>Math.abs(p.ppm-45)<.1).polarity,1);
+});
+test('general carbon signals are cross-assigned from DEPT-90 and DEPT-135',()=>{
+ const general=nmr.analyzeCarbon(points([20,45,60,170]),'d2o','13C');
+ const dept90=nmr.analyzeCarbon(points([60]),'d2o','DEPT90');
+ const dept135=nmr.analyzeCarbon(signedPoints([{ppm:20,sign:1},{ppm:60,sign:1},{ppm:45,sign:-1}]),'d2o','DEPT135');
+ const refined=nmr.refineCarbonAssignments(general,'13C',[{experiment:'DEPT90',peaks:dept90},{experiment:'DEPT135',peaks:dept135}]);
+ const typeAt=(ppm)=>refined.find(p=>Math.abs(p.ppm-ppm)<.1).carbonType;
+ assert.equal(typeAt(60),'CH');assert.equal(typeAt(45),'CH2');assert.equal(typeAt(20),'CH3');assert.equal(typeAt(170),'Cq');
 });
 test('tabs preserve edits; single, sequential and batch uploads use only available nuclei',async()=>{
  global.IS_REACT_ACT_ENVIRONMENT=true;

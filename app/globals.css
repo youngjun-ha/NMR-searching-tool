@@ -521,4 +521,17 @@ footer .footer-email:hover { color: #66716d; text-decoration: underline; }
 .nucleus-toggle button.active { background: var(--lime); color: var(--ink); box-shadow: 0 1px 3px rgba(16,44,43,.12); }
 .nucleus-toggle button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .nucleus-toggle button:disabled { opacity: .5; cursor: wait; }
+.carbon-experiment-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -5px 0 12px; }
+.carbon-experiment-strip button { padding: 7px 11px; border: 1px solid #bdcac3; border-radius: 999px; background: #fff; color: var(--muted); font-size: 10px; font-weight: 900; cursor: pointer; }
+.carbon-experiment-strip button.active { border-color: var(--ink); background: var(--ink); color: #fff; }
+.carbon-experiment-strip button.phase-toggle { margin-left: 4px; border-style: dashed; }
+.carbon-experiment-strip button.phase-toggle.active { border-color: #d7662f; background: #fff3ea; color: #9a3c13; }
+.carbon-analysis-note { display: flex; gap: 12px; align-items: center; margin: 0 0 16px; padding: 12px 14px; border: 1px solid #cbd9d1; border-radius: 10px; background: #f5f9f2; color: var(--muted); font-size: 11px; }
+.carbon-analysis-note b { flex: 0 0 auto; color: var(--ink); }
+.carbon-type-badge { display: inline-flex; flex-direction: column; gap: 2px; min-width: 78px; padding: 6px 9px; border-radius: 8px; background: #eaf5d9; color: #315313; }
+.carbon-type-badge.negative { background: #eef0ff; color: #3d428f; }
+.carbon-type-badge b { font-size: 12px; }
+.carbon-type-badge small { font-size: 8px; font-weight: 800; }
+.peak-dot.negative { fill: #686bc7; }
+.peak-pin.negative { stroke: #686bc7; stroke-dasharray: 3 3; }
 .empty-spectrum { padding: 22px; text-align: center; color: #58766d; }
